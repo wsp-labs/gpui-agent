@@ -1,0 +1,388 @@
+From 00a4c493a65798f6bb05140935f0c62cf27e7290 Mon Sep 17 00:00:00 2001
+From: zingzy <zingzy@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 23:29:02 +0000
+Subject: [PATCH] gpui: record each frame's elements and text for driver tools
+
+Tools that drive an app from outside it need to know what is on screen:
+where each element is, what it responds to, where it was built and what
+text it shows. The accessibility tree only holds elements with an id and
+an explicit role. This records every element and painted line while a
+window flag is on, and keeps cached views in the record.
+---
+ crates/gpui/src/element.rs          |   8 +++
+ crates/gpui/src/elements/div.rs     |  21 ++++++
+ crates/gpui/src/text_system/line.rs |   8 +++
+ crates/gpui/src/window.rs           | 105 ++++++++++++++++++++++++++++
+ crates/gpui/src/window/driver.rs    |  79 +++++++++++++++++++++
+ 5 files changed, 221 insertions(+)
+ create mode 100644 crates/gpui/src/window/driver.rs
+
+diff --git a/crates/gpui/src/element.rs b/crates/gpui/src/element.rs
+index cedf304..4a7dd4a 100644
+--- a/crates/gpui/src/element.rs
++++ b/crates/gpui/src/element.rs
+@@ -424,6 +424,13 @@ impl<E: Element> Drawable<E> {
+                 }
+ 
+                 let bounds = window.layout_bounds(layout_id);
++                let pushed_driver_node = window.driver_push_node(
++                    bounds,
++                    global_id.as_ref(),
++                    self.element.source_location(),
++                    std::any::type_name::<E>(),
++                    self.element.a11y_role(),
++                );
+                 let mut pushed_a11y_node = false;
+                 if window.a11y.is_active() {
+                     if let Some(global_id) = global_id.as_ref() {
+@@ -472,6 +479,7 @@ impl<E: Element> Drawable<E> {
+                     cx,
+                 );
+                 window.next_frame.dispatch_tree.pop_node();
++                window.driver_pop_node(pushed_driver_node);
+ 
+                 if pushed_a11y_node {
+                     if let Some(global_id) = global_id.as_ref() {
+diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
+index 11f0b72..75972c1 100644
+--- a/crates/gpui/src/elements/div.rs
++++ b/crates/gpui/src/elements/div.rs
+@@ -2362,6 +2362,27 @@ impl Interactivity {
+     ) -> R {
+         self.content_size = content_size;
+ 
++        if window.driver_enabled() {
++            window.driver_set_flags(crate::DriverFlags {
++                click: !self.click_listeners.is_empty()
++                    || !self.aux_click_listeners.is_empty()
++                    || !self.mouse_down_listeners.is_empty()
++                    || !self.mouse_up_listeners.is_empty(),
++                hover: self.hover_style.is_some()
++                    || self.group_hover_style.is_some()
++                    || self.hover_listener.is_some(),
++                focusable: self.tracked_focus_handle.is_some(),
++                focused: self
++                    .tracked_focus_handle
++                    .as_ref()
++                    .is_some_and(|handle| handle.is_focused(window)),
++                scroll: self.scroll_offset.is_some() || !self.scroll_listeners.is_empty(),
++                drag: self.drag_listener.is_some(),
++                drop: !self.drop_listeners.is_empty(),
++                tooltip: self.tooltip_builder.is_some(),
++            });
++        }
++
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         window.with_inspector_state(
+             _inspector_id,
+diff --git a/crates/gpui/src/text_system/line.rs b/crates/gpui/src/text_system/line.rs
+index f521005..93ffe84 100644
+--- a/crates/gpui/src/text_system/line.rs
++++ b/crates/gpui/src/text_system/line.rs
+@@ -142,6 +142,10 @@ impl ShapedLine {
+             &mut Window,
+         ),
+     ) -> Result<()> {
++        window.driver_record_text(
++            crate::Bounds::new(origin, crate::size(self.layout.width, line_height)),
++            &self.text,
++        );
+         paint_line(
+             origin,
+             &self.layout,
+@@ -471,6 +475,10 @@ impl WrappedLine {
+             None => self.layout.wrap_width,
+         };
+ 
++        window.driver_record_text(
++            crate::Bounds::new(origin, self.layout.size(line_height)),
++            &self.text,
++        );
+         paint_line(
+             origin,
+             &self.layout.unwrapped_layout,
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index ad0e7e0..60a0d01 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -66,8 +66,11 @@ use std::{
+ use uuid::Uuid;
+ 
+ pub(crate) mod a11y;
++mod driver;
+ mod prompts;
+ 
++pub use driver::{DriverFlags, DriverNode, DriverText};
++
+ pub use a11y::A11ySubtreeBuilder;
+ 
+ use self::a11y::A11y;
+@@ -1065,6 +1068,8 @@ pub(crate) struct Frame {
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     pub(crate) inspector_hitboxes: FxHashMap<HitboxId, crate::InspectorElementId>,
+     pub(crate) tab_stops: TabStopMap,
++    pub(crate) driver_nodes: Vec<DriverNode>,
++    pub(crate) driver_texts: Vec<DriverText>,
+ }
+ 
+ #[derive(Clone, Default)]
+@@ -1075,6 +1080,7 @@ pub(crate) struct PrepaintStateIndex {
+     dispatch_tree_index: usize,
+     accessed_element_states_index: usize,
+     line_layout_index: LineLayoutIndex,
++    driver_nodes_index: usize,
+ }
+ 
+ #[derive(Clone, Default)]
+@@ -1088,6 +1094,7 @@ pub(crate) struct PaintIndex {
+     accessed_element_states_index: usize,
+     tab_handle_index: usize,
+     line_layout_index: LineLayoutIndex,
++    driver_texts_index: usize,
+ }
+ 
+ impl Frame {
+@@ -1124,6 +1131,8 @@ impl Frame {
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             inspector_hitboxes: FxHashMap::default(),
+             tab_stops: TabStopMap::default(),
++            driver_nodes: Vec::new(),
++            driver_texts: Vec::new(),
+         }
+     }
+ 
+@@ -1140,6 +1149,8 @@ impl Frame {
+         self.window_control_hitboxes.clear();
+         self.deferred_draws.clear();
+         self.tab_stops.clear();
++        self.driver_nodes.clear();
++        self.driver_texts.clear();
+         self.focus = None;
+ 
+         #[cfg(any(test, feature = "test-support"))]
+@@ -1311,6 +1322,8 @@ pub struct Window {
+     #[cfg(feature = "profiler")]
+     debug_frame_overlay: crate::debug_overlay::DebugFrameOverlay,
+     pub(crate) a11y: A11y,
++    driver_enabled: bool,
++    driver_stack: Vec<usize>,
+ }
+ 
+ #[derive(Clone, Debug, Default)]
+@@ -2208,6 +2221,8 @@ impl Window {
+             client_inset: None,
+             image_cache_stack: Vec::new(),
+             captured_hitbox: None,
++            driver_enabled: false,
++            driver_stack: Vec::new(),
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             inspector: None,
+             #[cfg(feature = "profiler")]
+@@ -4000,6 +4015,79 @@ impl Window {
+         sorted_indices
+     }
+ 
++    /// Turns recording of each frame's elements and text on or off. See [`DriverNode`].
++    pub fn set_driver_enabled(&mut self, enabled: bool) {
++        if self.driver_enabled != enabled {
++            self.driver_enabled = enabled;
++            self.refresh();
++        }
++    }
++
++    /// Whether each frame's elements and text are being recorded.
++    pub fn driver_enabled(&self) -> bool {
++        self.driver_enabled
++    }
++
++    /// The elements drawn in the last frame, parents before children.
++    pub fn driver_nodes(&self) -> &[DriverNode] {
++        &self.rendered_frame.driver_nodes
++    }
++
++    /// The lines of text painted in the last frame, in paint order.
++    pub fn driver_texts(&self) -> &[DriverText] {
++        &self.rendered_frame.driver_texts
++    }
++
++    pub(crate) fn driver_push_node(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        global_id: Option<&GlobalElementId>,
++        source: Option<&'static std::panic::Location<'static>>,
++        type_name: &'static str,
++        role: Option<accesskit::Role>,
++    ) -> bool {
++        if !self.driver_enabled {
++            return false;
++        }
++        let index = self.next_frame.driver_nodes.len();
++        self.next_frame.driver_nodes.push(DriverNode {
++            parent: self.driver_stack.last().copied(),
++            bounds,
++            visible_bounds: driver::visible(bounds, self.content_mask()),
++            element_id: global_id
++                .and_then(|id| id.last())
++                .map(|id| id.to_string().into()),
++            type_name,
++            source,
++            role,
++            flags: DriverFlags::default(),
++        });
++        self.driver_stack.push(index);
++        true
++    }
++
++    pub(crate) fn driver_pop_node(&mut self, pushed: bool) {
++        if pushed {
++            self.driver_stack.pop();
++        }
++    }
++
++    pub(crate) fn driver_set_flags(&mut self, flags: DriverFlags) {
++        if let Some(&index) = self.driver_stack.last() {
++            self.next_frame.driver_nodes[index].flags = flags;
++        }
++    }
++
++    pub(crate) fn driver_record_text(&mut self, bounds: Bounds<Pixels>, text: &SharedString) {
++        if self.driver_enabled {
++            self.next_frame.driver_texts.push(DriverText {
++                bounds,
++                visible_bounds: driver::visible(bounds, self.content_mask()),
++                text: text.clone(),
++            });
++        }
++    }
++
+     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
+         PrepaintStateIndex {
+             hitboxes_index: self.next_frame.hitboxes.len(),
+@@ -4008,10 +4096,20 @@ impl Window {
+             dispatch_tree_index: self.next_frame.dispatch_tree.len(),
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             line_layout_index: self.text_system.layout_index(),
++            driver_nodes_index: self.next_frame.driver_nodes.len(),
+         }
+     }
+ 
+     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
++        let reused_nodes = driver::reparent(
++            &self.rendered_frame.driver_nodes
++                [range.start.driver_nodes_index..range.end.driver_nodes_index],
++            range.start.driver_nodes_index,
++            self.next_frame.driver_nodes.len(),
++            self.driver_stack.last().copied(),
++        )
++        .collect::<Vec<_>>();
++        self.next_frame.driver_nodes.extend(reused_nodes);
+         self.next_frame.hitboxes.extend(
+             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+                 .iter()
+@@ -4072,11 +4170,18 @@ impl Window {
+             cursor_styles_index: self.next_frame.cursor_styles.len(),
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             tab_handle_index: self.next_frame.tab_stops.paint_index(),
++            driver_texts_index: self.next_frame.driver_texts.len(),
+             line_layout_index: self.text_system.layout_index(),
+         }
+     }
+ 
+     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
++        self.next_frame.driver_texts.extend(
++            self.rendered_frame.driver_texts
++                [range.start.driver_texts_index..range.end.driver_texts_index]
++                .iter()
++                .cloned(),
++        );
+         // Cached elements still exist in the frame even when their paint methods don't run.
+         #[cfg(any(test, feature = "test-support"))]
+         for (selector, bounds) in &self.rendered_frame.debug_bounds_records
+diff --git a/crates/gpui/src/window/driver.rs b/crates/gpui/src/window/driver.rs
+new file mode 100644
+index 0000000..735d22b
+--- /dev/null
++++ b/crates/gpui/src/window/driver.rs
+@@ -0,0 +1,79 @@
++//! A record of each drawn frame's elements and text, for tools that drive an app from outside it.
++//!
++//! Recording is off until [`Window::set_driver_enabled`](crate::Window::set_driver_enabled) turns it on.
++
++use crate::{Bounds, ContentMask, Pixels, SharedString};
++use std::panic::Location;
++
++/// What an element responds to.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct DriverFlags {
++    /// Has a click, mouse down or mouse up listener.
++    pub click: bool,
++    /// Has a hover style or hover listener.
++    pub hover: bool,
++    /// Tracks a focus handle.
++    pub focusable: bool,
++    /// Its focus handle is focused.
++    pub focused: bool,
++    /// Scrolls or listens for scroll wheel events.
++    pub scroll: bool,
++    /// Can be dragged.
++    pub drag: bool,
++    /// Accepts drops.
++    pub drop: bool,
++    /// Shows a tooltip on hover.
++    pub tooltip: bool,
++}
++
++/// One element drawn in the last frame.
++#[derive(Clone, Debug)]
++pub struct DriverNode {
++    /// Index of the parent node in the same frame.
++    pub parent: Option<usize>,
++    /// Layout bounds in window coordinates.
++    pub bounds: Bounds<Pixels>,
++    /// The part of `bounds` inside its content mask. Empty when clipped away.
++    pub visible_bounds: Bounds<Pixels>,
++    /// The element's own id, if it has one.
++    pub element_id: Option<SharedString>,
++    /// The Rust type of the element.
++    pub type_name: &'static str,
++    /// Where the element was constructed.
++    pub source: Option<&'static Location<'static>>,
++    /// The accessibility role the element declares.
++    pub role: Option<accesskit::Role>,
++    /// What the element responds to.
++    pub flags: DriverFlags,
++}
++
++/// One line of text painted in the last frame.
++#[derive(Clone, Debug)]
++pub struct DriverText {
++    /// The line's bounds in window coordinates, before alignment.
++    pub bounds: Bounds<Pixels>,
++    /// The part of `bounds` inside its content mask.
++    pub visible_bounds: Bounds<Pixels>,
++    /// The painted string.
++    pub text: SharedString,
++}
++
++pub(crate) fn visible(bounds: Bounds<Pixels>, mask: ContentMask<Pixels>) -> Bounds<Pixels> {
++    bounds.intersect(&mask.bounds)
++}
++
++pub(crate) fn reparent(
++    nodes: &[DriverNode],
++    old_start: usize,
++    new_start: usize,
++    outer_parent: Option<usize>,
++) -> impl Iterator<Item = DriverNode> + '_ {
++    nodes.iter().map(move |node| {
++        let mut node = node.clone();
++        node.parent = match node.parent {
++            Some(parent) if parent >= old_start => Some(parent - old_start + new_start),
++            _ => outer_parent,
++        };
++        node
++    })
++}
+-- 
+2.43.0
+
