@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/protocol", "crates/gpui-agent", "crates/cli", "crates/testapp"]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+gpui-agent = { path = "crates/gpui-agent" }
+gpui-agent-protocol = { path = "crates/protocol" }
+gpui = { path = "../zed/crates/gpui", features = ["test-support"] }
+gpui_platform = { path = "../zed/crates/gpui_platform", features = ["test-support", "font-kit", "wayland", "x11"] }
+anyhow = "1.0.86"
+async-channel = "2.5"
+base64 = "0.22"
+clap = { version = "4.4", features = ["derive", "env", "wrap_help"] }
+image = { version = "0.25.1", default-features = false, features = ["png"] }
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.144"

@@ -1,0 +1,125 @@
+From 2fde1bbf02bc82073b6fbf17960fd048742fc7c8 Mon Sep 17 00:00:00 2001
+From: zingzy <zingzy@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 00:20:54 +0000
+Subject: [PATCH 4/4] gpui: let tools answer file panels in place of the
+ platform
+
+A tool driving an app cannot see or click a native open or save panel,
+so a path prompt blocked it. App::set_path_prompt_hook answers both kinds
+of path prompt directly; returning None cancels.
+---
+ crates/gpui/src/app.rs      | 41 ++++++++++++++++++++++++++++++-------
+ crates/gpui/src/platform.rs | 14 +++++++++++++
+ 2 files changed, 48 insertions(+), 7 deletions(-)
+
+diff --git a/crates/gpui/src/app.rs b/crates/gpui/src/app.rs
+index 0f1d59b..15a5c74 100644
+--- a/crates/gpui/src/app.rs
++++ b/crates/gpui/src/app.rs
+@@ -49,13 +49,13 @@ use crate::{
+     BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError, CursorStyle, DispatchPhase,
+     DisplayChanges, DisplayEvent, DisplayId, EventEmitter, ExternalDragPayload, FocusHandle,
+     FocusMap, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap, Keystroke, LayoutId,
+-    Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay,
+-    PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton,
+-    PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation,
+-    ScreenCaptureSource, SharedString, SubscriberSet, Subscription, SvgRenderer,
+-    SystemNotification, SystemNotificationResponse, Task, TextRenderingMode, TextSystem,
+-    ThermalState, Window, WindowAppearance, WindowButtonLayout, WindowHandle, WindowId,
+-    WindowInvalidator, WindowingRequest,
++    Menu, MenuItem, MissingGlyph, OwnedMenu, PathPrompt, PathPromptOptions, Pixels, Platform,
++    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority,
++    PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
++    RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
++    Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse, Task,
++    TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowButtonLayout,
++    WindowHandle, WindowId, WindowInvalidator, WindowingRequest,
+     colors::{Colors, GlobalColors},
+     hash, init_app_menus,
+ };
+@@ -920,6 +920,7 @@ pub struct App {
+     pub(crate) layout_id_buffer: Vec<LayoutId>, // We recycle this memory across layout requests.
+     pub(crate) propagate_event: bool,
+     pub(crate) prompt_builder: Option<PromptBuilder>,
++    path_prompt_hook: Option<Rc<dyn Fn(PathPrompt) -> Option<Vec<PathBuf>>>>,
+     pub(crate) window_invalidators_by_entity:
+         FxHashMap<EntityId, FxHashMap<WindowId, WindowInvalidator>>,
+     pub(crate) tracked_entities: FxHashMap<WindowId, FxHashSet<EntityId>>,
+@@ -1038,6 +1039,7 @@ impl App {
+                 layout_id_buffer: Default::default(),
+                 propagate_event: true,
+                 prompt_builder: Some(PromptBuilder::Default),
++                path_prompt_hook: None,
+                 #[cfg(any(feature = "inspector", debug_assertions))]
+                 inspector_renderer: None,
+                 #[cfg(any(feature = "inspector", debug_assertions))]
+@@ -2016,6 +2018,11 @@ impl App {
+         &self,
+         options: PathPromptOptions,
+     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        if let Some(hook) = &self.path_prompt_hook {
++            let (sender, receiver) = oneshot::channel();
++            sender.send(Ok(hook(PathPrompt::Open(options)))).ok();
++            return receiver;
++        }
+         self.platform.prompt_for_paths(options)
+     }
+ 
+@@ -2030,9 +2037,29 @@ impl App {
+         directory: &Path,
+         suggested_name: Option<&str>,
+     ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
++        if let Some(hook) = &self.path_prompt_hook {
++            let (sender, receiver) = oneshot::channel();
++            let answer = hook(PathPrompt::Save {
++                directory: directory.to_path_buf(),
++                suggested_name: suggested_name.map(ToString::to_string),
++            });
++            sender
++                .send(Ok(answer.and_then(|paths| paths.into_iter().next())))
++                .ok();
++            return receiver;
++        }
+         self.platform.prompt_for_new_path(directory, suggested_name)
+     }
+ 
++    /// Answers [`Self::prompt_for_paths`] and [`Self::prompt_for_new_path`] with `hook` in place
++    /// of the platform's file panels, for tools that drive the app. `None` cancels the prompt.
++    pub fn set_path_prompt_hook(
++        &mut self,
++        hook: impl Fn(PathPrompt) -> Option<Vec<PathBuf>> + 'static,
++    ) {
++        self.path_prompt_hook = Some(Rc::new(hook));
++    }
++
+     /// Reveals the specified path at the platform level, such as in Finder on macOS.
+     pub fn reveal_path(&self, path: &Path) {
+         self.platform.reveal_path(path)
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index 90b3bc3..c861bc0 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -2892,6 +2892,20 @@ pub enum TextRenderingMode {
+     Grayscale,
+ }
+ 
++/// A file panel request, as given to a hook set with [`App::set_path_prompt_hook`].
++#[derive(Debug, Clone)]
++pub enum PathPrompt {
++    /// The app asked for existing paths.
++    Open(PathPromptOptions),
++    /// The app asked for a path to save to.
++    Save {
++        /// The folder the panel would open in.
++        directory: std::path::PathBuf,
++        /// The file name the app suggested.
++        suggested_name: Option<String>,
++    },
++}
++
+ /// The options that can be configured for a file dialog prompt
+ #[derive(Clone, Debug)]
+ pub struct PathPromptOptions {
+-- 
+2.43.0
+

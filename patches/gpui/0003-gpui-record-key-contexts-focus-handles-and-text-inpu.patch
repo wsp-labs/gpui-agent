@@ -1,0 +1,225 @@
+From 95d9d4af49e878cf78f49465b160cd46e7073532 Mon Sep 17 00:00:00 2001
+From: zingzy <zingzy@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 23:55:42 +0000
+Subject: [PATCH 3/4] gpui: record key contexts, focus handles and text inputs
+ for driver tools
+
+A text field and a button both listen for the mouse, so the frame record
+could not tell them apart. Nodes now carry their key context and focus
+handle, the frame lists the focus handles that registered an input
+handler, and click listeners are kept apart from raw mouse listeners.
+---
+ crates/gpui/src/elements/div.rs  | 24 +++++++++++++++------
+ crates/gpui/src/window.rs        | 37 ++++++++++++++++++++++++++++++--
+ crates/gpui/src/window/driver.rs | 14 ++++++++++--
+ 3 files changed, 65 insertions(+), 10 deletions(-)
+
+diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
+index 75972c1..a808a65 100644
+--- a/crates/gpui/src/elements/div.rs
++++ b/crates/gpui/src/elements/div.rs
+@@ -2363,11 +2363,15 @@ impl Interactivity {
+         self.content_size = content_size;
+ 
+         if window.driver_enabled() {
+-            window.driver_set_flags(crate::DriverFlags {
+-                click: !self.click_listeners.is_empty()
+-                    || !self.aux_click_listeners.is_empty()
+-                    || !self.mouse_down_listeners.is_empty()
+-                    || !self.mouse_up_listeners.is_empty(),
++            let flags = crate::DriverFlags {
++                click: !self.click_listeners.is_empty() || !self.aux_click_listeners.is_empty(),
++                mouse: !self.mouse_down_listeners.is_empty()
++                    || !self.mouse_up_listeners.is_empty()
++                    || !self.mouse_move_listeners.is_empty()
++                    || !self.mouse_pressure_listeners.is_empty(),
++                keys: !self.key_down_listeners.is_empty()
++                    || !self.key_up_listeners.is_empty()
++                    || !self.action_listeners.is_empty(),
+                 hover: self.hover_style.is_some()
+                     || self.group_hover_style.is_some()
+                     || self.hover_listener.is_some(),
+@@ -2380,7 +2384,15 @@ impl Interactivity {
+                 drag: self.drag_listener.is_some(),
+                 drop: !self.drop_listeners.is_empty(),
+                 tooltip: self.tooltip_builder.is_some(),
+-            });
++                blocks: self.hitbox_behavior != HitboxBehavior::Normal,
++            };
++            let key_context = self
++                .key_context
++                .as_ref()
++                .and_then(|context| context.primary())
++                .map(|entry| entry.key.clone());
++            let focus = self.tracked_focus_handle.as_ref().map(|handle| handle.id);
++            window.driver_note_interactivity(flags, key_context, focus);
+         }
+ 
+         #[cfg(any(feature = "inspector", debug_assertions))]
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 60a0d01..3ba3d53 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -1070,6 +1070,7 @@ pub(crate) struct Frame {
+     pub(crate) tab_stops: TabStopMap,
+     pub(crate) driver_nodes: Vec<DriverNode>,
+     pub(crate) driver_texts: Vec<DriverText>,
++    pub(crate) driver_text_inputs: Vec<FocusId>,
+ }
+ 
+ #[derive(Clone, Default)]
+@@ -1095,6 +1096,7 @@ pub(crate) struct PaintIndex {
+     tab_handle_index: usize,
+     line_layout_index: LineLayoutIndex,
+     driver_texts_index: usize,
++    driver_text_inputs_index: usize,
+ }
+ 
+ impl Frame {
+@@ -1133,6 +1135,7 @@ impl Frame {
+             tab_stops: TabStopMap::default(),
+             driver_nodes: Vec::new(),
+             driver_texts: Vec::new(),
++            driver_text_inputs: Vec::new(),
+         }
+     }
+ 
+@@ -1151,6 +1154,7 @@ impl Frame {
+         self.tab_stops.clear();
+         self.driver_nodes.clear();
+         self.driver_texts.clear();
++        self.driver_text_inputs.clear();
+         self.focus = None;
+ 
+         #[cfg(any(test, feature = "test-support"))]
+@@ -4028,6 +4032,11 @@ impl Window {
+         self.driver_enabled
+     }
+ 
++    /// Whether the window has changes that no frame has drawn yet, so the record is stale.
++    pub fn driver_frame_pending(&self) -> bool {
++        self.invalidator.is_dirty()
++    }
++
+     /// The elements drawn in the last frame, parents before children.
+     pub fn driver_nodes(&self) -> &[DriverNode] {
+         &self.rendered_frame.driver_nodes
+@@ -4038,6 +4047,11 @@ impl Window {
+         &self.rendered_frame.driver_texts
+     }
+ 
++    /// The focus handles that registered a text input handler in the last frame.
++    pub fn driver_text_inputs(&self) -> &[FocusId] {
++        &self.rendered_frame.driver_text_inputs
++    }
++
+     pub(crate) fn driver_push_node(
+         &mut self,
+         bounds: Bounds<Pixels>,
+@@ -4061,6 +4075,8 @@ impl Window {
+             source,
+             role,
+             flags: DriverFlags::default(),
++            key_context: None,
++            focus: None,
+         });
+         self.driver_stack.push(index);
+         true
+@@ -4072,9 +4088,17 @@ impl Window {
+         }
+     }
+ 
+-    pub(crate) fn driver_set_flags(&mut self, flags: DriverFlags) {
++    pub(crate) fn driver_note_interactivity(
++        &mut self,
++        flags: DriverFlags,
++        key_context: Option<SharedString>,
++        focus: Option<FocusId>,
++    ) {
+         if let Some(&index) = self.driver_stack.last() {
+-            self.next_frame.driver_nodes[index].flags = flags;
++            let node = &mut self.next_frame.driver_nodes[index];
++            node.flags = flags;
++            node.key_context = key_context;
++            node.focus = focus;
+         }
+     }
+ 
+@@ -4171,6 +4195,7 @@ impl Window {
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             tab_handle_index: self.next_frame.tab_stops.paint_index(),
+             driver_texts_index: self.next_frame.driver_texts.len(),
++            driver_text_inputs_index: self.next_frame.driver_text_inputs.len(),
+             line_layout_index: self.text_system.layout_index(),
+         }
+     }
+@@ -4182,6 +4207,10 @@ impl Window {
+                 .iter()
+                 .cloned(),
+         );
++        self.next_frame.driver_text_inputs.extend_from_slice(
++            &self.rendered_frame.driver_text_inputs
++                [range.start.driver_text_inputs_index..range.end.driver_text_inputs_index],
++        );
+         // Cached elements still exist in the frame even when their paint methods don't run.
+         #[cfg(any(test, feature = "test-support"))]
+         for (selector, bounds) in &self.rendered_frame.debug_bounds_records
+@@ -5519,6 +5548,10 @@ impl Window {
+     ) {
+         self.invalidator.debug_assert_paint();
+ 
++        if self.driver_enabled {
++            self.next_frame.driver_text_inputs.push(focus_handle.id);
++        }
++
+         if focus_handle.is_focused(self) {
+             let cx = self.to_async(cx);
+             self.next_frame.input_handlers.push(Some(
+diff --git a/crates/gpui/src/window/driver.rs b/crates/gpui/src/window/driver.rs
+index 735d22b..954e586 100644
+--- a/crates/gpui/src/window/driver.rs
++++ b/crates/gpui/src/window/driver.rs
+@@ -2,14 +2,18 @@
+ //!
+ //! Recording is off until [`Window::set_driver_enabled`](crate::Window::set_driver_enabled) turns it on.
+ 
+-use crate::{Bounds, ContentMask, Pixels, SharedString};
++use crate::{Bounds, ContentMask, FocusId, Pixels, SharedString};
+ use std::panic::Location;
+ 
+ /// What an element responds to.
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+ pub struct DriverFlags {
+-    /// Has a click, mouse down or mouse up listener.
++    /// Has a click listener.
+     pub click: bool,
++    /// Has a mouse down, up, move or pressure listener.
++    pub mouse: bool,
++    /// Has a key or action listener.
++    pub keys: bool,
+     /// Has a hover style or hover listener.
+     pub hover: bool,
+     /// Tracks a focus handle.
+@@ -24,6 +28,8 @@ pub struct DriverFlags {
+     pub drop: bool,
+     /// Shows a tooltip on hover.
+     pub tooltip: bool,
++    /// Its hitbox stops the mouse from reaching what is behind it.
++    pub blocks: bool,
+ }
+ 
+ /// One element drawn in the last frame.
+@@ -45,6 +51,10 @@ pub struct DriverNode {
+     pub role: Option<accesskit::Role>,
+     /// What the element responds to.
+     pub flags: DriverFlags,
++    /// The primary entry of the key context the element sets, such as `Editor`.
++    pub key_context: Option<SharedString>,
++    /// The focus handle the element tracks.
++    pub focus: Option<FocusId>,
+ }
+ 
+ /// One line of text painted in the last frame.
+-- 
+2.43.0
+
