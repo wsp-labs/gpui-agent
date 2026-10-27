@@ -231,6 +231,9 @@ impl<'a> Frame<'a> {
     /// What a line calls an element: the text inside a leaf, or a container's id or key context.
     pub fn name(&self, i: usize) -> String {
         let node = &self.tree.nodes[i];
+        if let Some(label) = node.label.as_ref().filter(|label| !label.is_empty()) {
+            return label.clone();
+        }
         if self.interactive_below[i] {
             return node
                 .id
@@ -288,6 +291,12 @@ impl<'a> Frame<'a> {
         let mut states = Vec::new();
         if node.flags.focused {
             states.push("focused".into());
+        }
+        if node.disabled {
+            states.push("disabled".into());
+        }
+        if let Some(checked) = &node.checked {
+            states.push(checked.clone());
         }
         if node.visible.area() + 0.5 < node.bounds.area() {
             states.push("clipped".into());
@@ -347,7 +356,10 @@ fn emit(frame: &Frame, options: &Options, i: usize, depth: usize, out: &mut Vec<
 
     if leaf {
         if visible && within_depth {
-            let mut name = frame.text_below(i, options.all);
+            let mut name = node.label.clone().unwrap_or_default();
+            if name.is_empty() {
+                name = frame.text_below(i, options.all);
+            }
             if name.is_empty() {
                 name = node.id.clone().unwrap_or_default();
             }
@@ -359,7 +371,12 @@ fn emit(frame: &Frame, options: &Options, i: usize, depth: usize, out: &mut Vec<
     let mut child_depth = depth;
     if (interactive || node.role.is_some()) && !Frame::structural(node) {
         if visible && within_depth {
-            push(frame.role(i), node.id.clone().unwrap_or_default(), out);
+            let name = node
+                .label
+                .clone()
+                .or_else(|| node.id.clone())
+                .unwrap_or_default();
+            push(frame.role(i), name, out);
         }
         child_depth = depth + 1;
         let text = frame.own_text(i, options.all);
@@ -459,6 +476,10 @@ mod tests {
             flags,
             key_context: None,
             focus: None,
+            label: None,
+            value: None,
+            disabled: false,
+            checked: None,
         }
     }
 
@@ -607,6 +628,21 @@ mod tests {
             refs.len(),
             snapshot.entries.len(),
             "every line has its own key"
+        );
+    }
+
+    #[test]
+    fn an_accessible_label_names_the_element_and_states_show() {
+        let mut tree = sample();
+        tree.nodes[1].label = Some("Add one".into());
+        tree.nodes[4].checked = Some("checked".into());
+        tree.nodes[4].disabled = true;
+        let snapshot = build(&tree, &Options::default());
+        assert_eq!(snapshot.entries[0].name, "Add one");
+        let row = snapshot.entries.iter().find(|e| e.name == "row 1").unwrap();
+        assert_eq!(
+            row.states,
+            vec!["disabled".to_string(), "checked".to_string()]
         );
     }
 

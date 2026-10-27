@@ -64,21 +64,22 @@ try:
     server.stdin.flush()
 
     names = {t["name"] for t in call("tools/list")["result"]["tools"]}
-    check({"launch", "snapshot", "click", "fill", "screenshot", "wait", "find", "action"} <= names, f"tools/list has the core tools ({len(names)} tools)")
+    check({"launch", "snapshot", "click", "fill", "screenshot", "record", "apps", "wait", "find", "action"} <= names, f"tools/list has the core tools ({len(names)} tools)")
 
     launched = tool("launch", command=["gpui-agent-testapp"])
     check(not launched.get("isError") and "launched pid" in text_of(launched), "launch starts the app")
 
     snap = text_of(tool("snapshot", interactive=True))
-    check('@e2 button "Increment"' in snap, "snapshot lists the Increment button as @e2")
+    check('@e4 button "Increment"' in snap, "snapshot lists the Increment button as @e4")
+    check('button "Settings"' in snap, "an accessible label names the icon button")
 
-    clicked = tool("click", target="@e2")
-    check("clicked @e2" in text_of(clicked), "click by ref")
+    clicked = tool("click", target="@e4")
+    check("clicked @e4" in text_of(clicked), "click by ref")
 
     count = text_of(tool("get", what="probe", arg="count"))
     check(count.strip() == "1", f"probe count is 1 (got {count.strip()!r})")
 
-    filled = tool("fill", target="@e4", text="Ada")
+    filled = tool("fill", target="@e6", text="Ada")
     check(not filled.get("isError"), "fill the text field")
     waited = tool("wait", text="hello, Ada", timeout=3000)
     check(not waited.get("isError"), "wait for the greeting")
@@ -91,7 +92,17 @@ try:
     shot = tool("screenshot", annotate=True)
     images = [c for c in shot["content"] if c["type"] == "image"]
     check(len(images) == 1 and base64.b64decode(images[0]["data"])[:8] == b"\x89PNG\r\n\x1a\n", "screenshot returns a PNG inline")
-    check("[2] @e2" in text_of(shot), "annotated screenshot carries its legend")
+    check("[4] @e4" in text_of(shot), "annotated screenshot carries its legend")
+
+    element = tool("screenshot", element="id:increment")
+    check(any(c["type"] == "image" for c in element["content"]), "screenshot of one element")
+
+    started = tool("record", action="start", fps=10)
+    check(not started.get("isError"), "record starts")
+    tool("click", target="id:increment")
+    tool("wait", ms=500)
+    stopped = tool("record", action="stop", path=os.path.join(env["GPUI_AGENT_HOME"], "rec.gif"))
+    check("frames" in text_of(stopped), f"record stops with frames ({text_of(stopped).strip()})")
 
     missing = call("tools/call", {"name": "nope", "arguments": {}})
     check("error" in missing, "an unknown tool is a protocol error")

@@ -1,7 +1,7 @@
 From d618c260cb2e363b7290ec6e0774b571ac1c5c67 Mon Sep 17 00:00:00 2001
 From: zingzy <zingzy@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 01:02:46 +0000
-Subject: [PATCH 5/5] gpui: record text on the element that painted it
+Subject: [PATCH 5/6] gpui: record text on the element that painted it
 
 Matching painted lines to elements by position guessed wrong when text
 overflowed its box or a clipped row overlapped a neighbor. Each element

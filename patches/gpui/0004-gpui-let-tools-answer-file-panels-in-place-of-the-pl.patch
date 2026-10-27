@@ -1,7 +1,7 @@
 From 2fde1bbf02bc82073b6fbf17960fd048742fc7c8 Mon Sep 17 00:00:00 2001
 From: zingzy <zingzy@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 00:20:54 +0000
-Subject: [PATCH 4/5] gpui: let tools answer file panels in place of the
+Subject: [PATCH 4/6] gpui: let tools answer file panels in place of the
  platform
 
 A tool driving an app cannot see or click a native open or save panel,

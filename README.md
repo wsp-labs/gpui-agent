@@ -29,16 +29,19 @@ sees straight to the code that drew it.
 
 ## How it works
 
-- **`patches/gpui`**: five changes to Zed's GPUI. While a window flag is on, GPUI records each
+- **`patches/gpui`**: six changes to Zed's GPUI. While a window flag is on, GPUI records each
   frame's elements (bounds, element id, source location, key context, what they respond to), the
-  lines of text each element painted, and the focus handles that registered a text input. Linux
-  windows get `render_to_image`, which macOS and Windows already had. A hook lets a tool answer
-  open and save panels in place of the platform. `BASE` names the Zed commit they apply to.
+  lines of text each element painted, the focus handles that registered a text input, and the
+  accessible label, value and states of elements that declare a role. Tools can insert or replace
+  the focused field's text through its input handler. Linux windows get `render_to_image`, which
+  macOS and Windows already had. A hook lets a tool answer open and save panels in place of the
+  platform. `BASE` names the Zed commit they apply to.
 - **`patches/gpui-pre-0.3.9`**: the same changes for crates.io's `gpui-pre 0.3.9`, the GPUI that
   gpui-kit pins, one patch per published crate.
 - **`crates/gpui-agent`**: the crate an app calls at startup. It does nothing unless the app was
   started with `GPUI_AGENT_SOCKET` set. Then it answers requests on that Unix socket from the
-  main thread: windows, the frame record, input, screenshots, actions and probes.
+  main thread: windows, the frame record, input, screenshots, recordings, actions and probes.
+  Started with `GPUI_AGENT=1` instead, an app announces itself so `gpui-agent attach` can find it.
 - **`crates/cli`**: the `gpui-agent` command. It starts the app (under a private Xvfb on Linux
   when there is no display), builds the outline from the frame record, keeps refs stable across
   snapshots, refuses clicks on hidden or covered elements, and waits for conditions.
@@ -67,7 +70,7 @@ Then `gpui-agent skills get core` prints the full usage guide for the installed 
 
 ## Status
 
-`scripts/e2e.sh` (77 checks) and `scripts/mcp_e2e.py` (14) pass on Linux under Xvfb against Zed's
+`scripts/e2e.sh` (96 checks) and `scripts/mcp_e2e.py` (18) pass on Linux under Xvfb against Zed's
 GPUI, against `gpui-pre 0.3.9`, and against `gpui-pre 0.3.9` carrying another app's own GPUI
 patches. On macOS with a real Metal window at 2x they passed against Zed's GPUI; the `gpui-pre`
 build compiles on macOS but has not been run there yet. Windows is not supported, since the socket

@@ -1,7 +1,7 @@
 From 95d9d4af49e878cf78f49465b160cd46e7073532 Mon Sep 17 00:00:00 2001
 From: zingzy <zingzy@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 23:55:42 +0000
-Subject: [PATCH 3/5] gpui: record key contexts, focus handles and text inputs
+Subject: [PATCH 3/6] gpui: record key contexts, focus handles and text inputs
  for driver tools
 
 A text field and a button both listen for the mouse, so the frame record

@@ -1,0 +1,164 @@
+From 9376c227b0ec8718de9d7418885bdc2a6a6d5497 Mon Sep 17 00:00:00 2001
+From: zingzy <zingzy@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 02:07:13 +0000
+Subject: [PATCH 6/6] gpui: let driver tools set input text and read accessible
+ names
+
+Typing one keystroke at a time and clearing a field with select-all only
+works in apps that bind it. Driver tools can now insert or replace the
+focused field text through its input handler, and elements that declare
+a role report their accessible label, value, disabled and checked state.
+---
+ crates/gpui/src/element.rs       | 11 +++++++++-
+ crates/gpui/src/platform.rs      | 26 +++++++++++++++++++++++
+ crates/gpui/src/window.rs        | 36 ++++++++++++++++++++++++++++++--
+ crates/gpui/src/window/driver.rs |  8 +++++++
+ 4 files changed, 78 insertions(+), 3 deletions(-)
+
+diff --git a/crates/gpui/src/element.rs b/crates/gpui/src/element.rs
+index 385dca0..607ffbe 100644
+--- a/crates/gpui/src/element.rs
++++ b/crates/gpui/src/element.rs
+@@ -425,12 +425,21 @@ impl<E: Element> Drawable<E> {
+                 }
+ 
+                 let bounds = window.layout_bounds(layout_id);
++                let driver_a11y = if window.driver_enabled() {
++                    self.element.a11y_role().map(|role| {
++                        let mut node = accesskit::Node::new(role);
++                        self.element.write_a11y_info(&mut node);
++                        (role, node)
++                    })
++                } else {
++                    None
++                };
+                 let pushed_driver_node = window.driver_push_node(
+                     bounds,
+                     global_id.as_ref(),
+                     self.element.source_location(),
+                     std::any::type_name::<E>(),
+-                    self.element.a11y_role(),
++                    driver_a11y,
+                 );
+                 let mut pushed_a11y_node = false;
+                 if window.a11y.is_active() {
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index c861bc0..5f3015f 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -2083,6 +2083,32 @@ impl PlatformInputHandler {
+             .flatten()
+     }
+ 
++    pub(crate) fn driver_insert_text(&mut self, text: &str, window: &mut Window, cx: &mut App) {
++        self.handler.replace_text_in_range(None, text, window, cx);
++    }
++
++    pub(crate) fn driver_replace_all_text(
++        &mut self,
++        text: &str,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> bool {
++        let mut document = None;
++        if self
++            .handler
++            .text_for_range(0..usize::MAX, &mut document, window, cx)
++            .is_none()
++        {
++            return false;
++        }
++        let Some(document) = document else {
++            return false;
++        };
++        self.handler
++            .replace_text_in_range(Some(document), text, window, cx);
++        true
++    }
++
+     pub fn replace_text_in_range(&mut self, replacement_range: Option<Range<usize>>, text: &str) {
+         self.cx
+             .update(|window, cx| {
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 589d300..2515c4c 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -4040,6 +4040,28 @@ impl Window {
+         &self.rendered_frame.driver_nodes
+     }
+ 
++    /// Types `text` at the focused text field's selection, as an input method would, without
++    /// key events. Returns false when no text field has focus.
++    pub fn driver_insert_text(&mut self, text: &str, cx: &mut App) -> bool {
++        let Some(mut handler) = self.platform_window.take_input_handler() else {
++            return false;
++        };
++        handler.driver_insert_text(text, self, cx);
++        self.platform_window.set_input_handler(handler);
++        true
++    }
++
++    /// Replaces all the text of the focused text field. Returns false when no text field has
++    /// focus or the field cannot report its text.
++    pub fn driver_replace_text(&mut self, text: &str, cx: &mut App) -> bool {
++        let Some(mut handler) = self.platform_window.take_input_handler() else {
++            return false;
++        };
++        let replaced = handler.driver_replace_all_text(text, self, cx);
++        self.platform_window.set_input_handler(handler);
++        replaced
++    }
++
+     /// The focus handles that registered a text input handler in the last frame.
+     pub fn driver_text_inputs(&self) -> &[FocusId] {
+         &self.rendered_frame.driver_text_inputs
+@@ -4051,7 +4073,7 @@ impl Window {
+         global_id: Option<&GlobalElementId>,
+         source: Option<&'static std::panic::Location<'static>>,
+         type_name: &'static str,
+-        role: Option<accesskit::Role>,
++        a11y: Option<(accesskit::Role, accesskit::Node)>,
+     ) -> Option<usize> {
+         if !self.driver_enabled {
+             return None;
+@@ -4066,7 +4088,17 @@ impl Window {
+                 .map(|id| id.to_string().into()),
+             type_name,
+             source,
+-            role,
++            role: a11y.as_ref().map(|(role, _)| *role),
++            label: a11y
++                .as_ref()
++                .and_then(|(_, node)| node.label())
++                .map(|label| label.to_string().into()),
++            value: a11y
++                .as_ref()
++                .and_then(|(_, node)| node.value())
++                .map(|value| value.to_string().into()),
++            disabled: a11y.as_ref().is_some_and(|(_, node)| node.is_disabled()),
++            toggled: a11y.as_ref().and_then(|(_, node)| node.toggled()),
+             flags: DriverFlags::default(),
+             key_context: None,
+             focus: None,
+diff --git a/crates/gpui/src/window/driver.rs b/crates/gpui/src/window/driver.rs
+index b86a024..5d738d5 100644
+--- a/crates/gpui/src/window/driver.rs
++++ b/crates/gpui/src/window/driver.rs
+@@ -49,6 +49,14 @@ pub struct DriverNode {
+     pub source: Option<&'static Location<'static>>,
+     /// The accessibility role the element declares.
+     pub role: Option<accesskit::Role>,
++    /// The accessible name the element gives itself, such as an icon button's label.
++    pub label: Option<SharedString>,
++    /// The accessible value the element reports, such as a field's text.
++    pub value: Option<SharedString>,
++    /// The element reports itself disabled.
++    pub disabled: bool,
++    /// The element's checked state, when it has one.
++    pub toggled: Option<accesskit::Toggled>,
+     /// What the element responds to.
+     pub flags: DriverFlags,
+     /// The primary entry of the key context the element sets, such as `Editor`.
+-- 
+2.43.0
+

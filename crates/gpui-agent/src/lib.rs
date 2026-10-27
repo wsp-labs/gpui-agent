@@ -16,9 +16,9 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, ScrollDelta, Window, point, px,
 };
 use gpui_agent_protocol::{
-    ActionInfo, Button, ErrorKind, ErrorReply, Flags, Hello, InputEvent, PROTOCOL_VERSION,
-    PickRecord, RawNode, RawText, RawTree, Rect, Request, Response, SOCKET_ENV, ScreenshotInfo,
-    WindowInfo,
+    ANNOUNCE_ENV, ActionInfo, Announcement, Button, ErrorKind, ErrorReply, Flags, Hello,
+    InputEvent, PROTOCOL_VERSION, PickRecord, RawNode, RawText, RawTree, Recording, Rect, Request,
+    Response, SOCKET_ENV, ScreenshotInfo, WindowInfo, apps_dir,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
@@ -32,7 +32,7 @@ type Job = (Request, mpsc::Sender<Response>);
 
 /// Starts serving the command line if `GPUI_AGENT_SOCKET` is set.
 pub fn init(cx: &mut App) {
-    let Ok(path) = std::env::var(SOCKET_ENV) else {
+    let Some(path) = socket_path() else {
         return;
     };
     let (jobs, receiver) = async_channel::unbounded::<Job>();
@@ -59,6 +59,46 @@ pub fn init(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// The socket to serve on: the one `gpui-agent launch` named, or with `GPUI_AGENT=1` one in the
+/// shared apps folder, announced there so `gpui-agent attach` can find this app.
+fn socket_path() -> Option<String> {
+    if let Ok(path) = std::env::var(SOCKET_ENV) {
+        return Some(path);
+    }
+    if std::env::var(ANNOUNCE_ENV).ok().as_deref() != Some("1") {
+        return None;
+    }
+    let dir = apps_dir();
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        eprintln!("gpui-agent: cannot create {}: {error}", dir.display());
+        return None;
+    }
+    let pid = std::process::id();
+    let socket = dir
+        .join(format!("{pid}.sock"))
+        .to_string_lossy()
+        .to_string();
+    let name = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "app".into());
+    let announcement = Announcement {
+        pid,
+        name,
+        socket: socket.clone(),
+    };
+    let written = serde_json::to_string(&announcement)
+        .map_err(anyhow::Error::from)
+        .and_then(|json| Ok(std::fs::write(dir.join(format!("{pid}.json")), json)?));
+    if let Err(error) = written {
+        eprintln!("gpui-agent: cannot announce this app: {error:#}");
+    }
+    Some(socket)
 }
 
 /// Registers a named reader of app state that `gpui-agent get probe <name>` returns.
@@ -227,6 +267,26 @@ fn handle(request: Request, cx: &mut App) -> Response {
             Ok(serde_json::json!({ "queued": picks.0.borrow().queue.len() }))
         }
         Request::Picks => to_value(cx.global::<Picks>().0.borrow().log.clone()),
+        Request::RecordStart { window, dir, fps } => record_start(cx, window, dir, fps),
+        Request::RecordStop => {
+            let recorder = cx.try_global::<Recorder>().cloned();
+            match recorder {
+                Some(recorder) if recorder.0.borrow().task.is_some() => {
+                    let mut state = recorder.0.borrow_mut();
+                    state.task = None;
+                    to_value(Recording {
+                        dir: state.dir.clone(),
+                        frames: state.frames.get(),
+                        fps: state.fps,
+                        seconds: state
+                            .started
+                            .map(|started| started.elapsed().as_secs_f32())
+                            .unwrap_or_default(),
+                    })
+                }
+                _ => Err(Refusal(ErrorKind::NotFound, "nothing is recording".into())),
+            }
+        }
         Request::Probes => Ok(serde_json::json!(
             cx.try_global::<Probes>()
                 .map(|probes| probes.0.keys().cloned().collect::<Vec<_>>())
@@ -319,6 +379,17 @@ fn tree(window: &mut Window, _cx: &mut App) -> Result<serde_json::Value, Refusal
                 .source
                 .map(|location| format!("{}:{}", location.file(), location.line())),
             role: node.role.map(|role| format!("{role:?}")),
+            label: node.label.as_ref().map(|label| label.to_string()),
+            value: node.value.as_ref().map(|value| value.to_string()),
+            disabled: node.disabled,
+            checked: node.toggled.map(|toggled| {
+                match toggled {
+                    gpui::Toggled::True => "checked",
+                    gpui::Toggled::False => "unchecked",
+                    gpui::Toggled::Mixed => "mixed",
+                }
+                .to_string()
+            }),
             flags: Flags {
                 click: node.flags.click,
                 mouse: node.flags.mouse,
@@ -493,10 +564,23 @@ fn input(
                 })?;
                 handled.push(window.dispatch_keystroke(keystroke, cx));
             }
-            InputEvent::Text { text } => {
-                for c in text.chars() {
-                    handled.push(window.dispatch_keystroke(typed_keystroke(c), cx));
+            InputEvent::Text { text, keys } => {
+                if !keys && window.driver_insert_text(text, cx) {
+                    handled.push(true);
+                } else {
+                    for c in text.chars() {
+                        handled.push(window.dispatch_keystroke(typed_keystroke(c), cx));
+                    }
                 }
+            }
+            InputEvent::ReplaceText { text } => {
+                if !window.driver_replace_text(text, cx) {
+                    return Err(Refusal(
+                        ErrorKind::NotFound,
+                        "no text field has focus; click one first".into(),
+                    ));
+                }
+                handled.push(true);
             }
         }
     }
@@ -536,6 +620,75 @@ fn actions(window: &mut Window, cx: &mut App) -> Result<serde_json::Value, Refus
         })
         .collect();
     to_value(list)
+}
+
+/// Saves frames from the app's own renderer while it runs, so recording needs no screen.
+#[derive(Default, Clone)]
+struct Recorder(Rc<RefCell<RecorderState>>);
+
+#[derive(Default)]
+struct RecorderState {
+    task: Option<gpui::Task<()>>,
+    dir: String,
+    fps: u32,
+    frames: Rc<std::cell::Cell<usize>>,
+    started: Option<std::time::Instant>,
+}
+
+impl Global for Recorder {}
+
+fn record_start(
+    cx: &mut App,
+    window: u64,
+    dir: String,
+    fps: u32,
+) -> Result<serde_json::Value, Refusal> {
+    let handle = find_window(cx, window)?;
+    let fps = fps.clamp(1, 30);
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {dir}"))?;
+    if cx
+        .try_global::<Recorder>()
+        .is_some_and(|recorder| recorder.0.borrow().task.is_some())
+    {
+        return Err(Refusal(ErrorKind::BadRequest, "already recording".into()));
+    }
+    let frames = Rc::new(std::cell::Cell::new(0));
+    let task = cx.spawn({
+        let dir = dir.clone();
+        let frames = frames.clone();
+        async move |cx| {
+            let interval = std::time::Duration::from_millis(1000 / fps as u64);
+            let mut next = std::time::Instant::now();
+            loop {
+                let image = cx.update_window(handle, |_, window, _| window.render_to_image());
+                let Ok(Ok(image)) = image else {
+                    break;
+                };
+                let path = format!("{dir}/frame-{:05}.png", frames.get());
+                frames.set(frames.get() + 1);
+                cx.background_spawn(async move {
+                    image.save(&path).ok();
+                })
+                .detach();
+                next += interval;
+                let now = std::time::Instant::now();
+                if next > now {
+                    cx.background_executor().timer(next - now).await;
+                } else {
+                    next = now;
+                }
+            }
+        }
+    });
+    let recorder = cx.default_global::<Recorder>().clone();
+    *recorder.0.borrow_mut() = RecorderState {
+        task: Some(task),
+        dir: dir.clone(),
+        fps,
+        frames,
+        started: Some(std::time::Instant::now()),
+    };
+    to_value(serde_json::json!({ "dir": dir, "fps": fps }))
 }
 
 fn run_probe(cx: &mut App, name: &str) -> Result<serde_json::Value, Refusal> {

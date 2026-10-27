@@ -30,14 +30,7 @@ impl std::fmt::Display for AppError {
 impl std::error::Error for AppError {}
 
 pub fn state_root() -> PathBuf {
-    if let Some(home) = std::env::var_os("GPUI_AGENT_HOME") {
-        return PathBuf::from(home);
-    }
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(runtime).join("gpui-agent");
-    }
-    let uid = unsafe { libc::getuid() };
-    std::env::temp_dir().join(format!("gpui-agent-{uid}"))
+    gpui_agent_protocol::state_root()
 }
 
 impl Session {

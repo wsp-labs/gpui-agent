@@ -29,6 +29,8 @@ struct TestApp {
     overlay: bool,
     status: String,
     file: String,
+    checked: bool,
+    settings_opened: usize,
     name: Entity<TextInput>,
     footer: Entity<Footer>,
     focus_handle: FocusHandle,
@@ -75,7 +77,45 @@ impl Render for TestApp {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(div().text_size(px(18.)).child("gpui-agent test app"))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .items_center()
+                    .child(div().text_size(px(18.)).child("gpui-agent test app"))
+                    .child(
+                        div()
+                            .id("settings")
+                            .role(gpui::Role::Button)
+                            .aria_label("Settings")
+                            .px(px(6.))
+                            .child("⚙")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings_opened += 1;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("notify")
+                            .role(gpui::Role::CheckBox)
+                            .aria_label("Notify me")
+                            .aria_toggled(if self.checked {
+                                gpui::Toggled::True
+                            } else {
+                                gpui::Toggled::False
+                            })
+                            .child(if self.checked {
+                                "[x] notify"
+                            } else {
+                                "[ ] notify"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.checked = !this.checked;
+                                cx.notify();
+                            })),
+                    ),
+            )
             .child(
                 div()
                     .flex()
@@ -278,6 +318,8 @@ fn main() {
                             overlay: false,
                             status: "nothing deleted".into(),
                             file: "none".into(),
+                            checked: false,
+                            settings_opened: 0,
                             name,
                             footer,
                             focus_handle: cx.focus_handle(),
@@ -295,6 +337,9 @@ fn main() {
         let app = window;
         gpui_agent::probe(cx, "count", move |cx| {
             serde_json::json!(app.read(cx).map(|view| view.count).ok())
+        });
+        gpui_agent::probe(cx, "settings_opened", move |cx| {
+            serde_json::json!(app.read(cx).map(|view| view.settings_opened).ok())
         });
         gpui_agent::probe(cx, "selected", move |cx| {
             serde_json::json!(app.read(cx).ok().and_then(|view| view.selected))

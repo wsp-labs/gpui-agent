@@ -149,14 +149,17 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "type",
-            description: "Type text into the focused element, or into target after clicking it, without clearing.",
+            description: "Type text into the focused element, or into target after clicking it, without clearing. With keys, send one keystroke per character, for elements that read keys rather than text input.",
             schema: json!({
                 "type": "object",
-                "properties": { "text": { "type": "string" }, "target": target_schema(TARGET) },
+                "properties": { "text": { "type": "string" }, "target": target_schema(TARGET), "keys": { "type": "boolean" } },
                 "required": ["text"]
             }),
             args: |a| {
                 let mut out = vec!["type".to_string()];
+                if flag(a, "keys") {
+                    out.push("--keys".into());
+                }
                 if let Some(target) = text(a, "target") {
                     out.push(target);
                 }
@@ -216,14 +219,51 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "screenshot",
-            description: "A PNG of the window, rendered by the app itself. With annotate, numbered boxes match snapshot refs ([3] is @e3).",
-            schema: json!({ "type": "object", "properties": { "annotate": { "type": "boolean" } } }),
+            description: "A PNG of the window, rendered by the app itself. With annotate, numbered boxes match snapshot refs ([3] is @e3). With element, only that element.",
+            schema: json!({ "type": "object", "properties": { "annotate": { "type": "boolean" }, "element": target_schema(TARGET) } }),
             args: |a| {
                 let mut out = vec!["screenshot".to_string()];
                 if flag(a, "annotate") {
                     out.push("--annotate".into());
                 }
+                if let Some(element) = text(a, "element") {
+                    out.extend(["--element".into(), element]);
+                }
                 Ok(out)
+            },
+        },
+        Tool {
+            name: "record",
+            description: "Record the window from the app's own renderer. action start begins at fps frames a second; action stop writes the video (path ending .mp4 or .gif, needs ffmpeg) and says how many frames it holds.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["start", "stop"] },
+                    "fps": { "type": "integer" },
+                    "path": { "type": "string" }
+                },
+                "required": ["action"]
+            }),
+            args: |a| {
+                let action = need(a, "action")?;
+                let mut out = vec!["record".to_string(), action.clone()];
+                if action == "start" {
+                    if let Some(fps) = text(a, "fps") {
+                        out.extend(["--fps".into(), fps]);
+                    }
+                } else if let Some(path) = text(a, "path") {
+                    out.push(path);
+                }
+                Ok(out)
+            },
+        },
+        Tool {
+            name: "apps",
+            description: "List apps started with GPUI_AGENT=1. Pass attach (a pid or name) to drive one from this session.",
+            schema: json!({ "type": "object", "properties": { "attach": { "type": "string" } } }),
+            args: |a| match text(a, "attach") {
+                Some(app) => Ok(vec!["attach".into(), app]),
+                None => Ok(vec!["list".into()]),
             },
         },
         Tool {

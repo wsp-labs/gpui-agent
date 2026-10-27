@@ -105,6 +105,9 @@ enum Command {
         /// `[TARGET] TEXT`
         #[arg(num_args = 1..=2, required = true)]
         args: Vec<String>,
+        /// Send one keystroke per character, for elements that read keys, not text input.
+        #[arg(long)]
+        keys: bool,
     },
     /// Press keystrokes in GPUI's syntax: enter, ctrl-a, cmd-shift-p, secondary-s.
     Press {
@@ -129,7 +132,19 @@ enum Command {
         /// Draw numbered boxes keyed to snapshot refs.
         #[arg(long)]
         annotate: bool,
+        /// Crop to one element.
+        #[arg(long)]
+        element: Option<String>,
     },
+    /// Record the window to a video: `record start`, then `record stop [out.mp4|out.gif]`.
+    Record {
+        #[command(subcommand)]
+        command: RecordCommand,
+    },
+    /// List apps started with GPUI_AGENT=1 that this session can attach to.
+    List,
+    /// Drive an app from `gpui-agent list`, by pid or name.
+    Attach { app: String },
     /// Wait for an element, a text, its absence, a still frame, or a number of milliseconds.
     Wait {
         /// A target, or a number of milliseconds.
@@ -181,6 +196,19 @@ enum Command {
     Session {
         #[command(subcommand)]
         command: SessionCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecordCommand {
+    Start {
+        /// Frames a second, 1 to 30.
+        #[arg(long, default_value_t = 10)]
+        fps: u32,
+    },
+    Stop {
+        /// The video to write; `.mp4` or `.gif`. Needs ffmpeg; without it the frames stay as PNGs.
+        path: Option<String>,
     },
 }
 
@@ -362,7 +390,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             "hovered",
         ),
         Command::Fill { target, text } => fill(&ctx, &target, &text),
-        Command::Type { args } => {
+        Command::Type { args, keys } => {
             let (target, text) = match args.as_slice() {
                 [text] => (None, text.clone()),
                 [target, text] => (Some(target.clone()), text.clone()),
@@ -377,10 +405,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 )?;
             }
             let (mut client, window) = connect(&ctx)?;
+            client.tree(window)?;
             send(
                 &mut client,
                 window,
-                vec![InputEvent::Text { text: text.clone() }],
+                vec![InputEvent::Text {
+                    text: text.clone(),
+                    keys,
+                }],
             )?;
             say(&ctx, &serde_json::json!({ "typed": text }), || {
                 format!("typed {text:?}")
@@ -408,7 +440,41 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => scroll(&ctx, &direction, amount, on.as_deref()),
         Command::Scrollintoview { target } => scroll_into_view(&ctx, &target),
         Command::Drag { from, to } => drag(&ctx, &from, &to),
-        Command::Screenshot { path, annotate } => screenshot(&ctx, path, annotate),
+        Command::Screenshot {
+            path,
+            annotate,
+            element,
+        } => screenshot(&ctx, path, annotate, element),
+        Command::Record { command } => record(&ctx, command),
+        Command::List => {
+            let apps = announced_apps();
+            say(&ctx, &apps, || {
+                if apps.is_empty() {
+                    "no apps announced; start one with GPUI_AGENT=1".into()
+                } else {
+                    apps.iter()
+                        .map(|app| format!("{} pid {}", app.name, app.pid))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            })
+        }
+        Command::Attach { app } => {
+            let apps = announced_apps();
+            let found = apps
+                .iter()
+                .find(|a| a.pid.to_string() == app)
+                .or_else(|| apps.iter().find(|a| a.name == app))
+                .ok_or_else(|| anyhow!("no announced app {app:?}; `gpui-agent list` shows them"))?;
+            ctx.session.write("socket", &found.socket)?;
+            std::fs::remove_file(ctx.session.file("window")).ok();
+            std::fs::remove_file(ctx.session.file("refs.json")).ok();
+            let mut client = ctx.session.connect()?;
+            let hello: gpui_agent_protocol::Hello = client.call(&Request::Hello)?;
+            say(&ctx, &hello, || {
+                format!("attached to {} pid {}", found.name, hello.pid)
+            })
+        }
         Command::Wait {
             target,
             text,
@@ -521,7 +587,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 let mut names = Vec::new();
                 if let Ok(dirs) = std::fs::read_dir(session::state_root()) {
                     for dir in dirs.flatten() {
-                        names.push(dir.file_name().to_string_lossy().to_string());
+                        let name = dir.file_name().to_string_lossy().to_string();
+                        if !name.starts_with('.') {
+                            names.push(name);
+                        }
                     }
                 }
                 names.sort();
@@ -821,15 +890,14 @@ fn fill(ctx: &Ctx, target: &str, text: &str) -> anyhow::Result<()> {
     let frame = Frame::new(&tree);
     let node = resolve(ctx, &frame, target)?;
     let (x, y) = aim(&frame, node, target)?;
-    let mut events = click_events(x, y, Button::Left, 1);
-    events.push(InputEvent::Key {
-        keystroke: "secondary-a".into(),
-    });
-    events.push(InputEvent::Key {
-        keystroke: "backspace".into(),
-    });
-    events.push(InputEvent::Text { text: text.into() });
-    send(&mut client, window, events)?;
+    send(&mut client, window, click_events(x, y, Button::Left, 1))?;
+    client.tree(window)?;
+    send(
+        &mut client,
+        window,
+        vec![InputEvent::ReplaceText { text: text.into() }],
+    )
+    .with_context(|| format!("{target} took no text after the click"))?;
     say(
         ctx,
         &serde_json::json!({ "target": target, "text": text }),
@@ -976,7 +1044,12 @@ fn drag(ctx: &Ctx, from: &str, to: &str) -> anyhow::Result<()> {
     })
 }
 
-fn screenshot(ctx: &Ctx, path: Option<String>, annotate: bool) -> anyhow::Result<()> {
+fn screenshot(
+    ctx: &Ctx,
+    path: Option<String>,
+    annotate: bool,
+    element: Option<String>,
+) -> anyhow::Result<()> {
     let (mut client, window) = connect(ctx)?;
     let path = match path {
         Some(path) => std::path::absolute(path)?.to_string_lossy().to_string(),
@@ -995,6 +1068,23 @@ fn screenshot(ctx: &Ctx, path: Option<String>, annotate: bool) -> anyhow::Result
         path: path.clone(),
     })?;
     let mut legend = Vec::new();
+    let mut size = (info.width, info.height);
+    if let Some(target) = &element {
+        let tree = client.tree(window)?;
+        let frame = Frame::new(&tree);
+        let node = resolve(ctx, &frame, target)?;
+        let v = frame.tree.nodes[node].visible;
+        anyhow::ensure!(!v.is_empty(), "{target} is not visible");
+        let mut image = image::open(&path)?.to_rgba8();
+        let scale = image.width() as f32 / tree.width.max(1.);
+        let x = ((v.x * scale).round().max(0.) as u32).min(image.width() - 1);
+        let y = ((v.y * scale).round().max(0.) as u32).min(image.height() - 1);
+        let w = ((v.w * scale).round() as u32).clamp(1, image.width() - x);
+        let h = ((v.h * scale).round() as u32).clamp(1, image.height() - y);
+        image = image::imageops::crop_imm(&image, x, y, w, h).to_image();
+        image.save(&path)?;
+        size = (w, h);
+    }
     if annotate {
         let tree = client.tree(window)?;
         let snapshot = snapshot::build(
@@ -1012,9 +1102,9 @@ fn screenshot(ctx: &Ctx, path: Option<String>, annotate: bool) -> anyhow::Result
     }
     say(
         ctx,
-        &serde_json::json!({ "path": info.path, "width": info.width, "height": info.height, "legend": legend }),
+        &serde_json::json!({ "path": info.path, "width": size.0, "height": size.1, "legend": legend }),
         || {
-            let mut text = format!("{} {}x{}", info.path, info.width, info.height);
+            let mut text = format!("{} {}x{}", info.path, size.0, size.1);
             for line in &legend {
                 text.push('\n');
                 text.push_str(line);
@@ -1022,6 +1112,111 @@ fn screenshot(ctx: &Ctx, path: Option<String>, annotate: bool) -> anyhow::Result
             text
         },
     )
+}
+
+fn record(ctx: &Ctx, command: RecordCommand) -> anyhow::Result<()> {
+    match command {
+        RecordCommand::Start { fps } => {
+            let (mut client, window) = connect(ctx)?;
+            let dir = ctx.session.file("recording");
+            std::fs::remove_dir_all(&dir).ok();
+            let dir = dir.to_string_lossy().to_string();
+            let _: serde_json::Value = client.call(&Request::RecordStart {
+                window,
+                dir: dir.clone(),
+                fps,
+            })?;
+            say(
+                ctx,
+                &serde_json::json!({ "recording": dir, "fps": fps }),
+                || format!("recording window {window} at {fps} frames a second"),
+            )
+        }
+        RecordCommand::Stop { path } => {
+            let mut client = ctx.session.connect()?;
+            let recording: gpui_agent_protocol::Recording = client.call(&Request::RecordStop)?;
+            std::thread::sleep(Duration::from_millis(300));
+            let out = match path {
+                Some(path) => std::path::absolute(path)?,
+                None => ctx.session.file("recording.mp4"),
+            };
+            let gif = out.extension().is_some_and(|ext| ext == "gif");
+            let rate = if recording.seconds > 0. {
+                (recording.frames as f32 / recording.seconds).clamp(1., recording.fps as f32)
+            } else {
+                recording.fps as f32
+            };
+            let mut ffmpeg = std::process::Command::new("ffmpeg");
+            ffmpeg
+                .args(["-y", "-loglevel", "error", "-framerate"])
+                .arg(format!("{rate:.3}"))
+                .arg("-i")
+                .arg(format!("{}/frame-%05d.png", recording.dir));
+            if gif {
+                ffmpeg.args(["-vf", "split[a][b];[a]palettegen[p];[b][p]paletteuse"]);
+            } else {
+                ffmpeg.args([
+                    "-vf",
+                    "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]);
+            }
+            let encoded = ffmpeg.arg(&out).status();
+            let written = matches!(encoded, Ok(status) if status.success());
+            say(
+                ctx,
+                &serde_json::json!({
+                    "frames": recording.frames,
+                    "video": written.then(|| out.to_string_lossy().to_string()),
+                    "frames_dir": recording.dir,
+                }),
+                || {
+                    if written {
+                        format!(
+                            "{} ({} frames, {:.1}s)",
+                            out.display(),
+                            recording.frames,
+                            recording.seconds
+                        )
+                    } else {
+                        format!(
+                            "{} frames in {}; install ffmpeg to get a video",
+                            recording.frames, recording.dir
+                        )
+                    }
+                },
+            )
+        }
+    }
+}
+
+fn announced_apps() -> Vec<gpui_agent_protocol::Announcement> {
+    let dir = gpui_agent_protocol::apps_dir();
+    let mut apps = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return apps;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let Some(app) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<gpui_agent_protocol::Announcement>(&text).ok())
+        else {
+            continue;
+        };
+        if Client::connect(std::path::Path::new(&app.socket)).is_ok() {
+            apps.push(app);
+        } else {
+            std::fs::remove_file(&path).ok();
+            std::fs::remove_file(&app.socket).ok();
+        }
+    }
+    apps.sort_by_key(|app| app.pid);
+    apps
 }
 
 fn frame_hash(tree: &RawTree) -> u64 {
@@ -1277,7 +1472,12 @@ fn find(
                 "clicked",
             )?;
             let text = action_arg.ok_or_else(|| anyhow!("type needs a text"))?;
-            send(&mut client, window, vec![InputEvent::Text { text }])?;
+            client.tree(window)?;
+            send(
+                &mut client,
+                window,
+                vec![InputEvent::Text { text, keys: false }],
+            )?;
             Ok(())
         }
         other => bail!("find acts with click, dblclick, hover, fill or type; got {other:?}"),

@@ -9,6 +9,34 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// The variable the command line sets to the socket path; the app serves only when it is set.
 pub const SOCKET_ENV: &str = "GPUI_AGENT_SOCKET";
 
+/// Set to 1 to have an app announce itself in [`apps_dir`] so `gpui-agent attach` can find it.
+pub const ANNOUNCE_ENV: &str = "GPUI_AGENT";
+
+/// Where sessions keep their state: `$GPUI_AGENT_HOME`, else `$XDG_RUNTIME_DIR/gpui-agent`, else
+/// a per-user folder in the temp folder.
+pub fn state_root() -> std::path::PathBuf {
+    if let Some(home) = std::env::var_os("GPUI_AGENT_HOME") {
+        return home.into();
+    }
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return std::path::PathBuf::from(runtime).join("gpui-agent");
+    }
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    std::env::temp_dir().join(format!("gpui-agent-{user}"))
+}
+
+/// Where apps started with `GPUI_AGENT=1` put their socket and a `<pid>.json` [`Announcement`].
+pub fn apps_dir() -> std::path::PathBuf {
+    state_root().join(".apps")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Announcement {
+    pub pid: u32,
+    pub name: String,
+    pub socket: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
@@ -43,6 +71,23 @@ pub enum Request {
     },
     /// The file panels the app asked for, oldest first.
     Picks,
+    /// Start saving a PNG of the window `fps` times a second into `dir`.
+    RecordStart {
+        window: u64,
+        dir: String,
+        fps: u32,
+    },
+    /// Stop recording; answers a [`Recording`].
+    RecordStop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Recording {
+    pub dir: String,
+    pub frames: usize,
+    pub fps: u32,
+    /// How long the recording ran, so the video plays at the speed the app ran.
+    pub seconds: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +235,17 @@ pub struct RawNode {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// The accessible name the element gives itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The accessible value the element reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
+    /// `checked`, `unchecked` or `mixed`, for elements with a checked state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<String>,
     #[serde(default)]
     pub flags: Flags,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -287,8 +343,15 @@ pub enum InputEvent {
     },
     /// One keystroke in GPUI's syntax, such as `enter`, `ctrl-a` or `cmd-shift-p`.
     Key { keystroke: String },
-    /// Text typed character by character.
-    Text { text: String },
+    /// Text typed into the focused field at its selection, as an input method would. With
+    /// `keys`, or when no text field has focus, it is typed as one keystroke per character.
+    Text {
+        text: String,
+        #[serde(default)]
+        keys: bool,
+    },
+    /// Replace all the text of the focused field.
+    ReplaceText { text: String },
 }
 
 fn one() -> usize {

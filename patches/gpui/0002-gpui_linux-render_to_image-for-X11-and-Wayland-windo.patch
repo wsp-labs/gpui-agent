@@ -1,7 +1,7 @@
 From 0ffea1de6a51ca0f313d715ccd9b44c0120b99d1 Mon Sep 17 00:00:00 2001
 From: zingzy <zingzy@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 23:44:38 +0000
-Subject: [PATCH 2/5] gpui_linux: render_to_image for X11 and Wayland windows
+Subject: [PATCH 2/6] gpui_linux: render_to_image for X11 and Wayland windows
 
 Window::render_to_image only worked on macOS and Windows, so tools could
 not capture a real window on Linux. The window renderer now draws its
