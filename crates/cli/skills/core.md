@@ -19,7 +19,8 @@ built and its id path, not by position, so after a redraw it still finds the sam
 is on screen. When the element is gone the command fails and says so; take a new snapshot.
 
 On Linux with no display, `launch` starts a private Xvfb for the session. `--headless` forces it.
-On a Mac the window opens on screen, and a hidden or minimized window draws no frames.
+On a Mac the window opens on screen. When the platform stops drawing it (a locked screen, a hidden
+or minimized window), gpui-agent draws the frames itself after 200 ms, so commands keep working.
 
 ## Reading the screen
 
@@ -197,7 +198,6 @@ a screenshot, and prints the app's last log lines when it is not answering.
 - "is no longer on screen": the element went away or the screen changed. Snapshot again.
 - "is covered by": an overlay or popover sits on top. Dismiss it or act on it first.
 - "is not visible": it is scrolled out or clipped. `scrollintoview` it.
-- A window that is hidden or minimized on a Mac draws no frames, so waits time out.
 - Typing goes to the focused element. Click the field first, or use `fill` or `type @ref`.
 - "took no text after the click": the element is not a text field, or reads keys; try
   `type --keys`.

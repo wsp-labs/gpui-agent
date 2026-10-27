@@ -247,9 +247,10 @@ fn handle(request: Request, cx: &mut App) -> Response {
         Request::Input { window, events } => {
             on_window(cx, window, move |window, cx| input(window, cx, &events))
         }
-        Request::Screenshot { window, path } => {
-            on_window(cx, window, move |window, _| screenshot(window, &path))
-        }
+        Request::Screenshot { window, path } => on_window(cx, window, move |window, cx| {
+            settle(window, cx);
+            screenshot(window, &path)
+        }),
         Request::Actions { window } => on_window(cx, window, actions),
         Request::Action { window, name, data } => on_window(cx, window, move |window, cx| {
             let action = cx
@@ -352,9 +353,12 @@ fn rect(bounds: gpui::Bounds<Pixels>) -> Rect {
     }
 }
 
-fn tree(window: &mut Window, _cx: &mut App) -> Result<serde_json::Value, Refusal> {
-    if !window.driver_enabled() || window.driver_nodes().is_empty() {
+fn tree(window: &mut Window, cx: &mut App) -> Result<serde_json::Value, Refusal> {
+    if !window.driver_enabled() {
         window.set_driver_enabled(true);
+    }
+    settle(window, cx);
+    if window.driver_nodes().is_empty() {
         return Err(Refusal(
             ErrorKind::Warming,
             "waiting for the first recorded frame".into(),
@@ -436,6 +440,35 @@ fn tree(window: &mut Window, _cx: &mut App) -> Result<serde_json::Value, Refusal
             .collect(),
         prompt: window.has_active_prompt(),
     })
+}
+
+/// How long a frame may stay pending before the platform counts as not drawing: well past a
+/// frame on any display, short enough that a command barely waits.
+const STALL: std::time::Duration = std::time::Duration::from_millis(200);
+
+#[derive(Default)]
+struct Stalls(std::collections::HashMap<u64, std::time::Instant>);
+
+impl Global for Stalls {}
+
+/// A locked Mac, or a hidden or minimized window, stops getting frames from the platform, so the
+/// record and screenshots would go stale. After `STALL`, draw the pending frame here, as GPUI's
+/// own tests do; the platform presents it once frames come back.
+fn settle(window: &mut Window, cx: &mut App) {
+    let id = window.window_handle().window_id().as_u64();
+    if !window.driver_frame_pending() {
+        cx.default_global::<Stalls>().0.remove(&id);
+        return;
+    }
+    let since = *cx
+        .default_global::<Stalls>()
+        .0
+        .entry(id)
+        .or_insert_with(std::time::Instant::now);
+    if since.elapsed() >= STALL {
+        window.draw(cx).clear(cx);
+        cx.default_global::<Stalls>().0.remove(&id);
+    }
 }
 
 fn position(x: f32, y: f32) -> Point<Pixels> {
@@ -660,7 +693,10 @@ fn record_start(
             let interval = std::time::Duration::from_millis(1000 / fps as u64);
             let mut next = std::time::Instant::now();
             loop {
-                let image = cx.update_window(handle, |_, window, _| window.render_to_image());
+                let image = cx.update_window(handle, |_, window, cx| {
+                    settle(window, cx);
+                    window.render_to_image()
+                });
                 let Ok(Ok(image)) = image else {
                     break;
                 };

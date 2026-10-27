@@ -72,8 +72,10 @@ Then `gpui-agent skills get core` prints the full usage guide for the installed 
 
 `scripts/e2e.sh` (96 checks) and `scripts/mcp_e2e.py` (18) pass on Linux under Xvfb against Zed's
 GPUI, against `gpui-pre 0.3.9`, and against `gpui-pre 0.3.9` carrying another app's own GPUI
-patches. On macOS with a real Metal window at 2x they passed against Zed's GPUI; the `gpui-pre`
-build compiles on macOS but has not been run there yet. Windows is not supported, since the socket
+patches, and on macOS against both GPUIs with a real Metal window at 2x, run while the screen was
+locked. When the platform stops drawing a window (a locked Mac, a hidden or minimized window),
+gpui-agent draws the pending frame itself, so snapshots, screenshots and recordings stay current.
+Windows is not supported, since the socket
 is a Unix socket.
 
 Known gaps:

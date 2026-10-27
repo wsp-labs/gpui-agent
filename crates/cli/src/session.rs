@@ -149,7 +149,7 @@ impl Client {
                 {
                     if Instant::now() > deadline {
                         bail!(
-                            "window {window} drew no frame for 5s. A hidden or minimized window draws none on a Mac; bring it on screen"
+                            "window {window} drew no frame for 5s, even when asked to draw one itself; the app's main thread may be busy or stuck"
                         );
                     }
                     std::thread::sleep(Duration::from_millis(30));
