@@ -455,17 +455,6 @@ macOS against both GPUIs.
   that report it themselves.
 - X11 windows report an empty title, because GPUI's X11 backend does not implement `get_title`.
 
-## Related projects
-
-Others have built agent drivers for GPUI too, and are worth a look:
-[gpui-mcp](https://github.com/themixednuts/gpui-mcp) (MCP, its own GPUI fork, video, frame
-timing, Windows), [gpui-driver](https://github.com/maui1911/gpui-driver) (a command line over
-elements you tag), [stefan-siebert/gpui-mcp](https://github.com/stefan-siebert/gpui-mcp) (MCP over
-GPUI's inspector data), [hexuria/gpui-agent](https://github.com/hexuria/gpui-agent) (gpui-kit apps
-that publish their own tree) and [gpui-agentic-http](https://github.com/emakarov/gpui-agentic-http)
-(app actions over HTTP). Every one of them patches, forks or works around the same missing piece
-in GPUI; a frame record upstream would help them all.
-
 ## License
 
 Apache-2.0. The test app's text field comes from GPUI's `examples/input.rs`, also Apache-2.0.
