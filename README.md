@@ -75,8 +75,7 @@ GPUI, against `gpui-pre 0.3.9`, and against `gpui-pre 0.3.9` carrying another ap
 patches, and on macOS against both GPUIs with a real Metal window at 2x, run while the screen was
 locked. When the platform stops drawing a window (a locked Mac, a hidden or minimized window),
 gpui-agent draws the pending frame itself, so snapshots, screenshots and recordings stay current.
-Windows is not supported, since the socket
-is a Unix socket.
+Windows is not supported, since the socket is a Unix socket.
 
 Known gaps:
 
