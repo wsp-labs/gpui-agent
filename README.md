@@ -3,13 +3,6 @@
 See and drive a [GPUI](https://www.gpui.rs) app from the command line, the way agent-browser drives
 a web page. Built for coding agents that need to check the UI they just wrote.
 
-<p>
-  <a href="https://github.com/wsp-labs"><img alt="wsp labs" src="https://img.shields.io/badge/WSP-LABS-0a0a0a.svg?style=for-the-badge&labelColor=000000" height="28"></a>
-  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-0a0a0a.svg?style=for-the-badge&labelColor=000000" height="28"></a>
-  <a href="#platforms"><img alt="Linux and macOS" src="https://img.shields.io/badge/platforms-linux%20%7C%20macos-0a0a0a.svg?style=for-the-badge&labelColor=000000" height="28"></a>
-  <a href="#mcp-server"><img alt="MCP server included" src="https://img.shields.io/badge/MCP-included-0a0a0a.svg?style=for-the-badge&labelColor=000000" height="28"></a>
-</p>
-
 ```
 $ gpui-agent launch -- ./target/debug/my-app
 $ gpui-agent snapshot -i
