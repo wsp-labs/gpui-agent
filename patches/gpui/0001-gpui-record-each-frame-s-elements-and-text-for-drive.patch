@@ -1,7 +1,7 @@
 From 00a4c493a65798f6bb05140935f0c62cf27e7290 Mon Sep 17 00:00:00 2001
 From: zingzy <zingzy@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 23:29:02 +0000
-Subject: [PATCH 1/4] gpui: record each frame's elements and text for driver
+Subject: [PATCH 1/5] gpui: record each frame's elements and text for driver
  tools
 
 Tools that drive an app from outside it need to know what is on screen:

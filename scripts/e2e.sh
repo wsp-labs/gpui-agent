@@ -68,6 +68,7 @@ expect 'footer: a cached view' snapshot
 expect 'clicked @e2 button "Increment"' click @e2
 expect 'clicked @e2' click @e2
 expect '^2$' get probe count
+expect 'footer: a cached view' snapshot
 expect 'count: 2' get text text:count
 
 expect 'filled @e4 with "Ada"' fill @e4 "Ada"

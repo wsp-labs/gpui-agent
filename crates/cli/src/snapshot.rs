@@ -117,14 +117,15 @@ impl<'a> Frame<'a> {
             if text.text.trim().is_empty() {
                 continue;
             }
-            let owner = tree
-                .nodes
-                .iter()
-                .enumerate()
-                .filter(|(_, node)| node.bounds.contains_rect(&text.bounds))
-                .max_by_key(|(i, _)| (depth[*i], *i))
-                .map(|(i, _)| i)
-                .or_else(|| roots.first().copied());
+            let owner = text.node.filter(|&node| node < n).or_else(|| {
+                tree.nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| node.bounds.contains_rect(&text.bounds))
+                    .max_by_key(|(i, _)| (depth[*i], *i))
+                    .map(|(i, _)| i)
+                    .or_else(|| roots.first().copied())
+            });
             if let Some(owner) = owner {
                 texts[owner].push(t);
             }
@@ -361,6 +362,24 @@ fn emit(frame: &Frame, options: &Options, i: usize, depth: usize, out: &mut Vec<
             push(frame.role(i), node.id.clone().unwrap_or_default(), out);
         }
         child_depth = depth + 1;
+        let text = frame.own_text(i, options.all);
+        let text_within_depth = options.depth.is_none_or(|limit| child_depth <= limit);
+        if !options.interactive && !text.is_empty() && visible && text_within_depth {
+            let mut key = frame.keys[i].clone();
+            key.type_name.push_str("#text");
+            out.push(Entry {
+                reference: String::new(),
+                depth: child_depth,
+                role: "text".into(),
+                name: text,
+                states: Vec::new(),
+                context: None,
+                source: node.source.clone(),
+                visible: node.visible,
+                key,
+                node: i,
+            });
+        }
     } else if !options.interactive {
         let text = frame.own_text(i, options.all);
         if !text.is_empty() && visible && within_depth {
@@ -448,6 +467,7 @@ mod tests {
             bounds,
             visible: bounds,
             text: text.into(),
+            node: None,
         }
     }
 
@@ -540,6 +560,54 @@ mod tests {
         };
         let snapshot = build(&sample(), &options);
         assert!(snapshot.entries.iter().any(|e| e.name == "row 2"));
+    }
+
+    #[test]
+    fn text_goes_to_the_node_that_painted_it_wherever_it_sits() {
+        let mut tree = sample();
+        tree.texts[1].bounds = rect(0., 39., 60., 23.);
+        tree.texts[1].node = Some(2);
+        tree.texts[3].bounds = rect(0., 0., 40., 20.);
+        tree.texts[3].node = Some(5);
+        let options = Options {
+            all: true,
+            ..Default::default()
+        };
+        let snapshot = build(&tree, &options);
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|e| e.role == "text" && e.name == "count: 0")
+        );
+        let row = snapshot
+            .entries
+            .iter()
+            .find(|e| e.key.path == "rows/row-2")
+            .unwrap();
+        assert_eq!(row.name, "row 2");
+    }
+
+    #[test]
+    fn text_owned_by_a_container_is_printed() {
+        let mut tree = sample();
+        tree.nodes[0].flags.focusable = true;
+        tree.texts
+            .push(text(rect(250., 250., 60., 20.), "status line"));
+        let snapshot = build(&tree, &Options::default());
+        let line = snapshot
+            .entries
+            .iter()
+            .find(|e| e.name == "status line")
+            .expect("container text is printed");
+        assert_eq!(line.role, "text");
+        let refs: std::collections::HashSet<_> =
+            snapshot.entries.iter().map(|e| e.key.clone()).collect();
+        assert_eq!(
+            refs.len(),
+            snapshot.entries.len(),
+            "every line has its own key"
+        );
     }
 
     #[test]

@@ -169,7 +169,7 @@ impl TextInput {
     fn move_to(&mut self, offset: usize, window: &Window, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
         self.selection_reversed = false;
-        window.notify_text_selection_changed(&self.focus_handle);
+        notify_selection_changed(window, &self.focus_handle);
         cx.notify()
     }
 
@@ -209,7 +209,7 @@ impl TextInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
-        window.notify_text_selection_changed(&self.focus_handle);
+        notify_selection_changed(window, &self.focus_handle);
         cx.notify()
     }
 
@@ -300,7 +300,7 @@ impl EntityInputHandler for TextInput {
     ) {
         self.selected_range = self.range_from_utf16(&range_utf16);
         self.selection_reversed = false;
-        window.notify_text_selection_changed(&self.focus_handle);
+        notify_selection_changed(window, &self.focus_handle);
         cx.notify();
     }
 
@@ -324,7 +324,7 @@ impl EntityInputHandler for TextInput {
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.marked_range = None;
-        window.notify_text_input_changed(&self.focus_handle);
+        notify_input_changed(window, &self.focus_handle);
         cx.notify();
     }
 
@@ -347,7 +347,7 @@ impl EntityInputHandler for TextInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.selection_reversed = false;
         self.marked_range.take();
-        window.notify_text_input_changed(&self.focus_handle);
+        notify_input_changed(window, &self.focus_handle);
         cx.notify();
     }
 
@@ -385,7 +385,7 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.selection_reversed = false;
 
-        window.notify_text_input_changed(&self.focus_handle);
+        notify_input_changed(window, &self.focus_handle);
         cx.notify();
     }
 
@@ -413,6 +413,7 @@ impl EntityInputHandler for TextInput {
         ))
     }
 
+    #[cfg(not(feature = "gpui-pre-0-3-9"))]
     fn selection_bounds_for_range(
         &mut self,
         range_utf16: Range<usize>,
@@ -704,3 +705,19 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", End, Some("TextInput")),
     ]);
 }
+
+#[cfg(not(feature = "gpui-pre-0-3-9"))]
+fn notify_selection_changed(window: &Window, focus: &FocusHandle) {
+    window.notify_text_selection_changed(focus);
+}
+
+#[cfg(feature = "gpui-pre-0-3-9")]
+fn notify_selection_changed(_window: &Window, _focus: &FocusHandle) {}
+
+#[cfg(not(feature = "gpui-pre-0-3-9"))]
+fn notify_input_changed(window: &mut Window, focus: &FocusHandle) {
+    window.notify_text_input_changed(focus);
+}
+
+#[cfg(feature = "gpui-pre-0-3-9")]
+fn notify_input_changed(_window: &mut Window, _focus: &FocusHandle) {}

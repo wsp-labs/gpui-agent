@@ -4,11 +4,22 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Which GPUI to build against; pick exactly one.
+zed = ["dep:gpui", "dep:gpui_linux"]
+gpui-pre-0-3-9 = ["dep:gpui-pre", "dep:gpui-pre-linux"]
+
 [dependencies]
 anyhow.workspace = true
 async-channel.workspace = true
-gpui.workspace = true
+gpui = { workspace = true, optional = true }
+gpui-pre = { workspace = true, optional = true }
 gpui-agent-protocol.workspace = true
 image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# Only to turn on test-support, which gives Linux windows render_to_image.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux = { workspace = true, optional = true }
+gpui-pre-linux = { workspace = true, optional = true }

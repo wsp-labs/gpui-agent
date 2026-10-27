@@ -3,11 +3,17 @@
 //! Call [`init`] once at startup. It does nothing unless the app was started with
 //! `GPUI_AGENT_SOCKET` set, which `gpui-agent launch` does.
 
+#[cfg(all(feature = "zed", feature = "gpui-pre-0-3-9"))]
+compile_error!("gpui-agent builds against one GPUI: enable `zed` or `gpui-pre-0-3-9`, not both");
+#[cfg(not(any(feature = "zed", feature = "gpui-pre-0-3-9")))]
+compile_error!("gpui-agent needs a GPUI: enable the `zed` or `gpui-pre-0-3-9` feature");
+
+mod compat;
+
 use anyhow::{Context as _, anyhow};
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Global, Keystroke, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, Window,
-    point, px,
+    MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, ScrollDelta, Window, point, px,
 };
 use gpui_agent_protocol::{
     ActionInfo, Button, ErrorKind, ErrorReply, Flags, Hello, InputEvent, PROTOCOL_VERSION,
@@ -331,12 +337,16 @@ fn tree(window: &mut Window, _cx: &mut App) -> Result<serde_json::Value, Refusal
         })
         .collect();
     let texts = window
-        .driver_texts()
+        .driver_nodes()
         .iter()
-        .map(|text| RawText {
-            bounds: rect(text.bounds),
-            visible: rect(text.visible_bounds),
-            text: text.text.to_string(),
+        .enumerate()
+        .flat_map(|(index, node)| {
+            node.texts.iter().map(move |text| RawText {
+                bounds: rect(text.bounds),
+                visible: rect(text.visible_bounds),
+                text: text.text.to_string(),
+                node: Some(index),
+            })
         })
         .collect();
     let size = window.viewport_size();
@@ -401,7 +411,6 @@ fn input(
     cx: &mut App,
     events: &[InputEvent],
 ) -> Result<serde_json::Value, Refusal> {
-    let os = cx.platform_info().os;
     let mut handled = Vec::new();
     for event in events {
         match event {
@@ -466,18 +475,17 @@ fn input(
                 modifiers: m,
             } => {
                 let result = window.dispatch_event(
-                    PlatformInput::Scroll(ScrollEvent {
-                        position: position(*x, *y),
-                        delta: ScrollDelta::Pixels(point(px(*dx), px(*dy))),
-                        modifiers: modifiers(m),
-                        ..Default::default()
-                    }),
+                    compat::scroll(
+                        position(*x, *y),
+                        ScrollDelta::Pixels(point(px(*dx), px(*dy))),
+                        modifiers(m),
+                    ),
                     cx,
                 );
                 handled.push(!result.propagate);
             }
             InputEvent::Key { keystroke } => {
-                let keystroke = Keystroke::parse_with_os(keystroke, os).map_err(|error| {
+                let keystroke = compat::parse_keystroke(keystroke, cx).map_err(|error| {
                     Refusal(
                         ErrorKind::BadRequest,
                         format!("bad keystroke {keystroke:?}: {error}"),
@@ -508,7 +516,6 @@ fn screenshot(window: &mut Window, path: &str) -> Result<serde_json::Value, Refu
 }
 
 fn actions(window: &mut Window, cx: &mut App) -> Result<serde_json::Value, Refusal> {
-    let os = cx.platform_info().os;
     let list: Vec<ActionInfo> = window
         .available_actions(cx)
         .iter()
@@ -521,7 +528,7 @@ fn actions(window: &mut Window, cx: &mut App) -> Result<serde_json::Value, Refus
                     binding
                         .keystrokes()
                         .iter()
-                        .map(|keystroke| keystroke.unparse(os))
+                        .map(|keystroke| compat::unparse(keystroke, cx))
                         .collect::<Vec<_>>()
                         .join(" ")
                 })

@@ -29,11 +29,13 @@ sees straight to the code that drew it.
 
 ## How it works
 
-- **`patches/gpui`**: four changes to GPUI. While a window flag is on, GPUI records each frame's
-  elements (bounds, element id, source location, key context, what they respond to) and every
-  painted line of text, and lists the focus handles that registered a text input. Linux windows
-  get `render_to_image`, which macOS and Windows already had. A hook lets a tool answer open and
-  save panels in place of the platform. `BASE` names the Zed commit the patches apply to.
+- **`patches/gpui`**: five changes to Zed's GPUI. While a window flag is on, GPUI records each
+  frame's elements (bounds, element id, source location, key context, what they respond to), the
+  lines of text each element painted, and the focus handles that registered a text input. Linux
+  windows get `render_to_image`, which macOS and Windows already had. A hook lets a tool answer
+  open and save panels in place of the platform. `BASE` names the Zed commit they apply to.
+- **`patches/gpui-pre-0.3.9`**: the same changes for crates.io's `gpui-pre 0.3.9`, the GPUI that
+  gpui-kit pins, one patch per published crate.
 - **`crates/gpui-agent`**: the crate an app calls at startup. It does nothing unless the app was
   started with `GPUI_AGENT_SOCKET` set. Then it answers requests on that Unix socket from the
   main thread: windows, the frame record, input, screenshots, actions and probes.
@@ -49,10 +51,15 @@ sees straight to the code that drew it.
 
 ## Using it in an app
 
-1. Build against the patched GPUI: check out Zed at the commit in `patches/gpui/BASE` and apply
-   the patches with `git am patches/gpui/*.patch`.
-2. Add `gpui-agent` as a dependency, and enable GPUI's `test-support` feature and
-   `gpui_platform`'s `test-support` feature in the builds you drive. Screenshots need them.
+1. Build against a patched GPUI.
+   - On Zed's GPUI: check out Zed at the commit in `patches/gpui/BASE` and run
+     `git am patches/gpui/*.patch`.
+   - On gpui-kit or `gpui-pre 0.3.9`: unpack `gpui-pre`, `gpui-pre-wgpu` and `gpui-pre-linux`
+     0.3.9, apply each crate's patch from `patches/gpui-pre-0.3.9`, and point
+     `[patch.crates-io]` at them. `scripts/gpui-pre.sh` does exactly this.
+2. Add `gpui-agent` as a dependency with the feature for your GPUI: `zed` or `gpui-pre-0-3-9`.
+   Enable `test-support` on GPUI and on `gpui_platform` in the builds you drive; screenshots need
+   it.
 3. Call `gpui_agent::init(cx)` once in `Application::run`.
 4. Optionally expose state with `gpui_agent::probe(cx, "name", |cx| json)`.
 
@@ -60,9 +67,11 @@ Then `gpui-agent skills get core` prints the full usage guide for the installed 
 
 ## Status
 
-Proven on Linux under Xvfb with X11 and on macOS with a real Metal window at 2x: all 76 checks of
-`scripts/e2e.sh` and all 14 of `scripts/mcp_e2e.py` pass on both. Windows is not supported, since
-the socket is a Unix socket.
+`scripts/e2e.sh` (77 checks) and `scripts/mcp_e2e.py` (14) pass on Linux under Xvfb against Zed's
+GPUI, against `gpui-pre 0.3.9`, and against `gpui-pre 0.3.9` carrying another app's own GPUI
+patches. On macOS with a real Metal window at 2x they passed against Zed's GPUI; the `gpui-pre`
+build compiles on macOS but has not been run there yet. Windows is not supported, since the socket
+is a Unix socket.
 
 Known gaps:
 
@@ -79,6 +88,7 @@ cargo test -p gpui-agent-cli
 cargo build -p gpui-agent-cli -p gpui-agent-testapp
 scripts/e2e.sh target/debug
 scripts/mcp_e2e.py target/debug
+scripts/e2e.sh "$(scripts/gpui-pre.sh /tmp/gpui-pre)"   # the same against gpui-pre 0.3.9
 ```
 
 The workspace expects the patched Zed checkout at `../zed`. `rust-toolchain.toml` pins Rust

@@ -203,6 +203,9 @@ pub struct RawText {
     pub bounds: Rect,
     pub visible: Rect,
     pub text: String,
+    /// The node that painted this line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

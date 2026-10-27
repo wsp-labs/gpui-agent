@@ -1,0 +1,227 @@
+From d618c260cb2e363b7290ec6e0774b571ac1c5c67 Mon Sep 17 00:00:00 2001
+From: zingzy <zingzy@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 01:02:46 +0000
+Subject: [PATCH 5/5] gpui: record text on the element that painted it
+
+Matching painted lines to elements by position guessed wrong when text
+overflowed its box or a clipped row overlapped a neighbor. Each element
+now collects the lines painted while it paints, so cached views carry
+their text with them and need no separate copy.
+---
+ crates/gpui/src/element.rs       |  5 +++
+ crates/gpui/src/window.rs        | 55 ++++++++++++++++++--------------
+ crates/gpui/src/window/driver.rs |  2 ++
+ 3 files changed, 38 insertions(+), 24 deletions(-)
+
+diff --git a/crates/gpui/src/element.rs b/crates/gpui/src/element.rs
+index 4a7dd4a..385dca0 100644
+--- a/crates/gpui/src/element.rs
++++ b/crates/gpui/src/element.rs
+@@ -338,6 +338,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
+     },
+     Prepaint {
+         node_id: DispatchNodeId,
++        driver_node: Option<usize>,
+         global_id: Option<GlobalElementId>,
+         inspector_id: Option<InspectorElementId>,
+         bounds: Bounds<Pixels>,
+@@ -513,6 +514,7 @@ impl<E: Element> Drawable<E> {
+ 
+                 self.phase = ElementDrawPhase::Prepaint {
+                     node_id,
++                    driver_node: pushed_driver_node,
+                     global_id,
+                     inspector_id,
+                     bounds,
+@@ -532,6 +534,7 @@ impl<E: Element> Drawable<E> {
+         match mem::take(&mut self.phase) {
+             ElementDrawPhase::Prepaint {
+                 node_id,
++                driver_node,
+                 global_id,
+                 inspector_id,
+                 bounds,
+@@ -545,6 +548,7 @@ impl<E: Element> Drawable<E> {
+                 }
+ 
+                 window.next_frame.dispatch_tree.set_active_node(node_id);
++                window.driver_push_paint(driver_node);
+                 self.element.paint(
+                     global_id.as_ref(),
+                     inspector_id.as_ref(),
+@@ -554,6 +558,7 @@ impl<E: Element> Drawable<E> {
+                     window,
+                     cx,
+                 );
++                window.driver_pop_paint(driver_node);
+ 
+                 if global_id.is_some() {
+                     window.element_id_stack.pop();
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 3ba3d53..589d300 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -1069,7 +1069,6 @@ pub(crate) struct Frame {
+     pub(crate) inspector_hitboxes: FxHashMap<HitboxId, crate::InspectorElementId>,
+     pub(crate) tab_stops: TabStopMap,
+     pub(crate) driver_nodes: Vec<DriverNode>,
+-    pub(crate) driver_texts: Vec<DriverText>,
+     pub(crate) driver_text_inputs: Vec<FocusId>,
+ }
+ 
+@@ -1095,7 +1094,6 @@ pub(crate) struct PaintIndex {
+     accessed_element_states_index: usize,
+     tab_handle_index: usize,
+     line_layout_index: LineLayoutIndex,
+-    driver_texts_index: usize,
+     driver_text_inputs_index: usize,
+ }
+ 
+@@ -1134,7 +1132,6 @@ impl Frame {
+             inspector_hitboxes: FxHashMap::default(),
+             tab_stops: TabStopMap::default(),
+             driver_nodes: Vec::new(),
+-            driver_texts: Vec::new(),
+             driver_text_inputs: Vec::new(),
+         }
+     }
+@@ -1153,7 +1150,6 @@ impl Frame {
+         self.deferred_draws.clear();
+         self.tab_stops.clear();
+         self.driver_nodes.clear();
+-        self.driver_texts.clear();
+         self.driver_text_inputs.clear();
+         self.focus = None;
+ 
+@@ -1328,6 +1324,7 @@ pub struct Window {
+     pub(crate) a11y: A11y,
+     driver_enabled: bool,
+     driver_stack: Vec<usize>,
++    driver_paint_stack: Vec<usize>,
+ }
+ 
+ #[derive(Clone, Debug, Default)]
+@@ -2227,6 +2224,7 @@ impl Window {
+             captured_hitbox: None,
+             driver_enabled: false,
+             driver_stack: Vec::new(),
++            driver_paint_stack: Vec::new(),
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             inspector: None,
+             #[cfg(feature = "profiler")]
+@@ -4042,11 +4040,6 @@ impl Window {
+         &self.rendered_frame.driver_nodes
+     }
+ 
+-    /// The lines of text painted in the last frame, in paint order.
+-    pub fn driver_texts(&self) -> &[DriverText] {
+-        &self.rendered_frame.driver_texts
+-    }
+-
+     /// The focus handles that registered a text input handler in the last frame.
+     pub fn driver_text_inputs(&self) -> &[FocusId] {
+         &self.rendered_frame.driver_text_inputs
+@@ -4059,9 +4052,9 @@ impl Window {
+         source: Option<&'static std::panic::Location<'static>>,
+         type_name: &'static str,
+         role: Option<accesskit::Role>,
+-    ) -> bool {
++    ) -> Option<usize> {
+         if !self.driver_enabled {
+-            return false;
++            return None;
+         }
+         let index = self.next_frame.driver_nodes.len();
+         self.next_frame.driver_nodes.push(DriverNode {
+@@ -4077,17 +4070,30 @@ impl Window {
+             flags: DriverFlags::default(),
+             key_context: None,
+             focus: None,
++            texts: Vec::new(),
+         });
+         self.driver_stack.push(index);
+-        true
++        Some(index)
+     }
+ 
+-    pub(crate) fn driver_pop_node(&mut self, pushed: bool) {
+-        if pushed {
++    pub(crate) fn driver_pop_node(&mut self, pushed: Option<usize>) {
++        if pushed.is_some() {
+             self.driver_stack.pop();
+         }
+     }
+ 
++    pub(crate) fn driver_push_paint(&mut self, node: Option<usize>) {
++        if let Some(node) = node {
++            self.driver_paint_stack.push(node);
++        }
++    }
++
++    pub(crate) fn driver_pop_paint(&mut self, node: Option<usize>) {
++        if node.is_some() {
++            self.driver_paint_stack.pop();
++        }
++    }
++
+     pub(crate) fn driver_note_interactivity(
+         &mut self,
+         flags: DriverFlags,
+@@ -4103,10 +4109,18 @@ impl Window {
+     }
+ 
+     pub(crate) fn driver_record_text(&mut self, bounds: Bounds<Pixels>, text: &SharedString) {
+-        if self.driver_enabled {
+-            self.next_frame.driver_texts.push(DriverText {
++        if !self.driver_enabled {
++            return;
++        }
++        let visible_bounds = driver::visible(bounds, self.content_mask());
++        if let Some(node) = self
++            .driver_paint_stack
++            .last()
++            .and_then(|&index| self.next_frame.driver_nodes.get_mut(index))
++        {
++            node.texts.push(DriverText {
+                 bounds,
+-                visible_bounds: driver::visible(bounds, self.content_mask()),
++                visible_bounds,
+                 text: text.clone(),
+             });
+         }
+@@ -4194,19 +4208,12 @@ impl Window {
+             cursor_styles_index: self.next_frame.cursor_styles.len(),
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             tab_handle_index: self.next_frame.tab_stops.paint_index(),
+-            driver_texts_index: self.next_frame.driver_texts.len(),
+             driver_text_inputs_index: self.next_frame.driver_text_inputs.len(),
+             line_layout_index: self.text_system.layout_index(),
+         }
+     }
+ 
+     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
+-        self.next_frame.driver_texts.extend(
+-            self.rendered_frame.driver_texts
+-                [range.start.driver_texts_index..range.end.driver_texts_index]
+-                .iter()
+-                .cloned(),
+-        );
+         self.next_frame.driver_text_inputs.extend_from_slice(
+             &self.rendered_frame.driver_text_inputs
+                 [range.start.driver_text_inputs_index..range.end.driver_text_inputs_index],
+diff --git a/crates/gpui/src/window/driver.rs b/crates/gpui/src/window/driver.rs
+index 954e586..b86a024 100644
+--- a/crates/gpui/src/window/driver.rs
++++ b/crates/gpui/src/window/driver.rs
+@@ -55,6 +55,8 @@ pub struct DriverNode {
+     pub key_context: Option<SharedString>,
+     /// The focus handle the element tracks.
+     pub focus: Option<FocusId>,
++    /// The lines of text the element painted itself, in paint order.
++    pub texts: Vec<DriverText>,
+ }
+ 
+ /// One line of text painted in the last frame.
+-- 
+2.43.0
+

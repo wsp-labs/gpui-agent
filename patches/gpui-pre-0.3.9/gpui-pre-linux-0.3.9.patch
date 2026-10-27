@@ -1,0 +1,71 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index c1eebb1..41b9d71 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -43,7 +43,11 @@ screen-capture = [
+     "gpui/screen-capture",
+     "scap",
+ ]
+-test-support = ["gpui/test-support"]
++test-support = [
++    "gpui/test-support",
++    "gpui_wgpu?/test-support",
++    "dep:image",
++]
+ wayland = [
+     "dep:accesskit_unix",
+     "gpui_wgpu",
+@@ -146,6 +150,11 @@ package = "gpui-pre-wgpu"
+ version = "=0.3.9"
+ package = "gpui-pre-http-client"
+ 
++[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.image]
++version = "0.25.1"
++default-features = false
++optional = true
++
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.libc]
+ version = "0.2"
+ 
+diff --git a/src/linux/wayland/window.rs b/src/linux/wayland/window.rs
+index 8d92234..c4e202b 100644
+--- a/src/linux/wayland/window.rs
++++ b/src/linux/wayland/window.rs
+@@ -2008,6 +2008,16 @@ impl PlatformWindow for WaylandWindow {
+         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
+     }
+ 
++    #[cfg(feature = "test-support")]
++    fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
++        let mut state = self.borrow_mut();
++        let renderer = state
++            .renderer
++            .as_mut()
++            .ok_or_else(|| anyhow::anyhow!("window has no renderer"))?;
++        renderer.render_to_image(scene)
++    }
++
+     fn draw(&self, scene: &Scene) {
+         let mut state = self.borrow_mut();
+         let state = &mut *state;
+diff --git a/src/linux/x11/window.rs b/src/linux/x11/window.rs
+index f6ee76a..0c12fe8 100644
+--- a/src/linux/x11/window.rs
++++ b/src/linux/x11/window.rs
+@@ -1748,6 +1748,16 @@ impl PlatformWindow for X11Window {
+         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
+     }
+ 
++    #[cfg(feature = "test-support")]
++    fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
++        let mut inner = self.0.state.borrow_mut();
++        let renderer = inner
++            .renderer
++            .as_mut()
++            .ok_or_else(|| anyhow!("window has no renderer"))?;
++        renderer.render_to_image(scene)
++    }
++
+     fn draw(&self, scene: &Scene) {
+         let mut inner = self.0.state.borrow_mut();
+         let inner = &mut *inner;
