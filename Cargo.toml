@@ -1,22 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/gpui-agent", "crates/cli", "crates/testapp"]
+members = ["crates/protocol", "crates/cli"]
+# The in-app crate and the test app build against GPUI in their own workspace, so installing the
+# command line never needs a GPUI checkout.
+exclude = ["gpui"]
 
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
+repository = "https://github.com/wsp-labs/gpui-agent"
+rust-version = "1.98"
 
 [workspace.dependencies]
-gpui-agent = { path = "crates/gpui-agent" }
 gpui-agent-protocol = { path = "crates/protocol" }
-gpui = { path = "../zed/crates/gpui", features = ["test-support"] }
-gpui_linux = { path = "../zed/crates/gpui_linux", features = ["test-support"] }
-gpui_platform = { path = "../zed/crates/gpui_platform", features = ["test-support", "font-kit", "wayland", "x11"] }
-gpui-pre = { version = "=0.3.9", features = ["test-support"] }
-gpui-pre-linux = { version = "=0.3.9", features = ["test-support"] }
-gpui-pre-platform = { version = "=0.3.9", features = ["test-support", "font-kit", "wayland", "x11", "runtime_shaders"] }
 anyhow = "1.0.86"
-async-channel = "2.5"
 base64 = "0.22"
 clap = { version = "4.4", features = ["derive", "env", "wrap_help"] }
 image = { version = "0.25.1", default-features = false, features = ["png"] }

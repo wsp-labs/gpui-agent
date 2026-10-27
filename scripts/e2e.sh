@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Drives the test app through every command and checks each result.
-# Usage: scripts/e2e.sh <dir holding gpui-agent and gpui-agent-testapp>
+# Usage: scripts/e2e.sh <dir>...   the folders holding gpui-agent and gpui-agent-testapp
 set -euo pipefail
 
-bin_dir=$(cd "${1:?give the folder holding gpui-agent and gpui-agent-testapp}" && pwd)
-export PATH="$bin_dir:$PATH"
+[ $# -gt 0 ] || { echo "give the folders holding gpui-agent and gpui-agent-testapp" >&2; exit 2; }
+for dir in "$@"; do
+  PATH="$(cd "$dir" && pwd):$PATH"
+done
+export PATH
 export GPUI_AGENT_HOME
 GPUI_AGENT_HOME=$(mktemp -d)
 export GPUI_AGENT_SESSION=e2e

@@ -29,22 +29,26 @@ while read -r name version sum; do
   fi
   rm -rf "${vendor:?}/$name-$version"
   tar -xzf "$file" -C "$vendor"
-  (cd "$vendor/$name-$version" && git apply "$repo/patches/gpui-pre-0.3.9/$name-$version.patch")
+  # Inside another repository, git apply resolves paths from its root and skips them silently.
+  (cd "$vendor/$name-$version" && GIT_CEILING_DIRECTORIES="$vendor" git apply \
+    "$repo/patches/gpui-pre-0.3.9/$name-$version.patch")
   patch_table+=$'\n'"$name = { path = \"$vendor/$name-$version\" }"
 done <<<"$crates"
 
-mkdir -p "$ws"
-rsync -a --delete --exclude target "$repo/crates/" "$ws/crates/"
-cp "$repo/Cargo.lock" "$repo/rust-toolchain.toml" "$ws/"
+mkdir -p "$ws/crates"
+rsync -a --delete --exclude target "$repo/gpui/" "$ws/gpui/"
+rsync -a --delete --exclude target "$repo/crates/protocol/" "$ws/crates/protocol/"
+cp "$repo/rust-toolchain.toml" "$ws/"
 # A gpui-pre consumer has no Zed checkout, so the scratch copies drop the `zed` choice.
 zed_deps='^(gpui|gpui_linux|gpui_platform) = '
-grep -vE "$zed_deps" "$repo/Cargo.toml" >"$ws/Cargo.toml"
-printf '\n%s\n' "$patch_table" >>"$ws/Cargo.toml"
-for manifest in "$ws/crates/gpui-agent/Cargo.toml" "$ws/crates/testapp/Cargo.toml"; do
+grep -vE "$zed_deps" "$repo/gpui/Cargo.toml" >"$ws/gpui/Cargo.toml"
+printf '\n%s\n' "$patch_table" >>"$ws/gpui/Cargo.toml"
+for manifest in "$ws/gpui/gpui-agent/Cargo.toml" "$ws/gpui/testapp/Cargo.toml"; do
   grep -vE "$zed_deps" "$manifest" | sed -e 's/^default = \["zed"\]/default = []/' -e 's/^zed = .*/zed = []/' >"$manifest.new"
   mv "$manifest.new" "$manifest"
 done
 
-(cd "$ws" && cargo build -q -p gpui-agent-cli -p gpui-agent-testapp \
+(cd "$ws/gpui" && cargo build -q -p gpui-agent-testapp \
   --no-default-features --features gpui-agent-testapp/gpui-pre-0-3-9 >&2)
-echo "$ws/target/debug"
+cargo build -q --manifest-path "$repo/Cargo.toml" -p gpui-agent-cli --target-dir "$ws/gpui/target" >&2
+echo "$ws/gpui/target/debug"

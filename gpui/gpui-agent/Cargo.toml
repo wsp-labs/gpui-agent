@@ -3,6 +3,9 @@ name = "gpui-agent"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The in-app side of gpui-agent: serves a GPUI app to the gpui-agent command line"
 
 [features]
 # Which GPUI to build against; pick exactly one.

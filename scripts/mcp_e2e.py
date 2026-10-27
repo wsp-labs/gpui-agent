@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """Drives `gpui-agent mcp` over stdio like an MCP client and checks each reply.
 
-Usage: scripts/mcp_e2e.py <dir holding gpui-agent and gpui-agent-testapp>
+Usage: scripts/mcp_e2e.py <dir>...   the folders holding gpui-agent and gpui-agent-testapp
 """
 
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 
-bin_dir = os.path.abspath(sys.argv[1])
 env = dict(os.environ)
-env["PATH"] = bin_dir + os.pathsep + env["PATH"]
+env["PATH"] = os.pathsep.join([os.path.abspath(d) for d in sys.argv[1:]] + [env["PATH"]])
+agent = shutil.which("gpui-agent", path=env["PATH"])
 env["GPUI_AGENT_HOME"] = tempfile.mkdtemp()
 env.pop("DISPLAY", None)
 env.pop("WAYLAND_DISPLAY", None)
 
 server = subprocess.Popen(
-    [os.path.join(bin_dir, "gpui-agent"), "--session", "mcp-e2e", "mcp"],
+    [agent, "--session", "mcp-e2e", "mcp"],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     text=True,
@@ -111,6 +112,6 @@ try:
     check("closed" in text_of(closed), "close stops the app")
     print(f"\nall {checks} checks passed")
 finally:
-    subprocess.run([os.path.join(bin_dir, "gpui-agent"), "--session", "mcp-e2e", "close"], env=env, capture_output=True)
+    subprocess.run([agent, "--session", "mcp-e2e", "close"], env=env, capture_output=True)
     server.stdin.close()
     server.wait(timeout=10)

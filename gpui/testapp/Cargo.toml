@@ -3,6 +3,9 @@ name = "gpui-agent-testapp"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "A GPUI app that exercises every gpui-agent command"
 publish = false
 
 [features]

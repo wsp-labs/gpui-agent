@@ -98,7 +98,7 @@ enum Command {
     Dblclick { target: String },
     /// Move the mouse over an element.
     Hover { target: String },
-    /// Click a field, clear it and type.
+    /// Click a field and replace its text.
     Fill { target: String, text: String },
     /// Type text into the focused element, or into TARGET after clicking it.
     Type {
@@ -128,6 +128,7 @@ enum Command {
     Drag { from: String, to: String },
     /// Save a PNG of the window.
     Screenshot {
+        /// Where to save the PNG; defaults to the session folder.
         path: Option<String>,
         /// Draw numbered boxes keyed to snapshot refs.
         #[arg(long)]
@@ -149,28 +150,38 @@ enum Command {
     Wait {
         /// A target, or a number of milliseconds.
         target: Option<String>,
+        /// Until a visible line of text contains this.
         #[arg(long)]
         text: Option<String>,
+        /// Until no visible line of text contains this.
         #[arg(long)]
         gone: Option<String>,
+        /// Until the frame stops changing for 300 ms.
         #[arg(long)]
         idle: bool,
         /// Milliseconds before giving up.
         #[arg(long, default_value_t = 25000)]
         timeout: u64,
     },
-    /// Read something: text, box, probe, title, focus, count.
-    Get { what: String, arg: Option<String> },
+    /// Read something: text, box, probe, title, focus, count, picks.
+    Get {
+        /// text, box, probe, title, focus, count or picks
+        what: String,
+        /// The target, probe name or text it needs.
+        arg: Option<String>,
+    },
     /// Find elements by text, role, id or source, and optionally act on the first.
     Find {
         /// text, role, id or source
         by: String,
+        /// What to look for.
         value: String,
         /// With `role`, the element's name must contain this.
         #[arg(long)]
         name: Option<String>,
         /// click, dblclick, hover, fill or type
         action: Option<String>,
+        /// The text for fill or type.
         action_arg: Option<String>,
     },
     /// List the actions available at the focused element, with their key bindings.
@@ -201,11 +212,13 @@ enum Command {
 
 #[derive(Subcommand)]
 enum RecordCommand {
+    /// Start saving frames from the app's own renderer.
     Start {
         /// Frames a second, 1 to 30.
         #[arg(long, default_value_t = 10)]
         fps: u32,
     },
+    /// Stop and write the video.
     Stop {
         /// The video to write; `.mp4` or `.gif`. Needs ffmpeg; without it the frames stay as PNGs.
         path: Option<String>,
@@ -214,12 +227,15 @@ enum RecordCommand {
 
 #[derive(Subcommand)]
 enum SkillsCommand {
+    /// The guides this version carries.
     List,
+    /// Print one guide.
     Get { name: String },
 }
 
 #[derive(Subcommand)]
 enum SessionCommand {
+    /// Sessions with state on this computer.
     List,
     /// A stable name for the current git worktree, so parallel agents get separate apps.
     Id {
@@ -1614,11 +1630,12 @@ mod tests {
         out
     }
 
-    #[test]
-    fn every_command_in_the_guide_parses() {
+    const README: &str = include_str!("../../../README.md");
+
+    fn commands_parse(doc: &str, name: &str) -> usize {
         let mut in_block = false;
         let mut checked = 0;
-        for line in CORE_SKILL.lines() {
+        for line in doc.lines() {
             if line.starts_with("```") {
                 in_block = line.trim() == "```bash";
                 continue;
@@ -1629,10 +1646,25 @@ mod tests {
             }
             let args = words(line);
             if let Err(error) = Cli::try_parse_from(&args) {
-                panic!("the guide shows a command that does not parse: {line}\n{error}");
+                use clap::error::ErrorKind::{DisplayHelp, DisplayVersion};
+                if !matches!(error.kind(), DisplayHelp | DisplayVersion) {
+                    panic!("{name} shows a command that does not parse: {line}\n{error}");
+                }
             }
             checked += 1;
         }
+        checked
+    }
+
+    #[test]
+    fn every_command_in_the_guide_parses() {
+        let checked = commands_parse(CORE_SKILL, "the guide");
         assert!(checked > 40, "only {checked} commands found in the guide");
+    }
+
+    #[test]
+    fn every_command_in_the_readme_parses() {
+        let checked = commands_parse(README, "the README");
+        assert!(checked > 60, "only {checked} commands found in the README");
     }
 }
